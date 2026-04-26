@@ -1229,7 +1229,62 @@ bool PestppOptions::assign_ies_value_by_key(const string& key, const string& val
 
     }
 
-
+    // --- DSI lambda surrogate options (plan §9) ---
+    else if (key == "IES_LAMBDA_SURROGATE")
+    {
+        ies_lambda_surrogate = pest_utils::parse_string_arg_to_bool(value);
+        return true;
+    }
+    else if (key == "IES_LAMBDA_SURROGATE_TRAIN_MODE")
+    {
+        ies_lambda_surrogate_train_mode = lower_cp(value);
+        return true;
+    }
+    else if (key == "IES_LAMBDA_SURROGATE_METHOD")
+    {
+        ies_lambda_surrogate_method = lower_cp(value);
+        return true;
+    }
+    else if (key == "IES_LAMBDA_SURROGATE_LOAD")
+    {
+        ies_lambda_surrogate_load = value;
+        return true;
+    }
+    else if (key == "IES_LAMBDA_SURROGATE_ENERGY_THRESHOLD")
+    {
+        convert_ip(value, ies_lambda_surrogate_energy_threshold);
+        return true;
+    }
+    else if (key == "IES_LAMBDA_SURROGATE_TRANSFORMS")
+    {
+        ies_lambda_surrogate_transforms = lower_cp(value);
+        return true;
+    }
+    else if (key == "IES_LAMBDA_SURROGATE_ROWWISE_GROUPS_FILE")
+    {
+        ies_lambda_surrogate_rowwise_groups_file = value;
+        return true;
+    }
+    else if (key == "IES_LAMBDA_SURROGATE_RECHECK_WITH_FOM")
+    {
+        ies_lambda_surrogate_recheck_with_fom = pest_utils::parse_string_arg_to_bool(value);
+        return true;
+    }
+    else if (key == "IES_LAMBDA_SURROGATE_SAVE_TRAIN")
+    {
+        ies_lambda_surrogate_save_train = pest_utils::parse_string_arg_to_bool(value);
+        return true;
+    }
+    else if (key == "IES_LAMBDA_SURROGATE_SAVE_PMAT")
+    {
+        ies_lambda_surrogate_save_pmat = pest_utils::parse_string_arg_to_bool(value);
+        return true;
+    }
+    else if (key == "IES_LAMBDA_SURROGATE_MIN_TRAIN_REALS")
+    {
+        convert_ip(value, ies_lambda_surrogate_min_train_reals);
+        return true;
+    }
 
     return false;
 }
@@ -2085,6 +2140,21 @@ void PestppOptions::set_defaults()
     set_ies_updatebyreals(false);
     set_save_dense(false);
     set_ies_aal_indicator_pars(vector<string>());
+
+    // --- DSI lambda surrogate defaults (plan §9) ---
+    // Defaults chosen so ies_lambda_surrogate=false yields bit-for-bit
+    // identical pestpp-ies behaviour to today.
+    set_ies_lambda_surrogate(false);
+    set_ies_lambda_surrogate_train_mode("accumulate");
+    set_ies_lambda_surrogate_method("dsi");
+    set_ies_lambda_surrogate_load("");
+    set_ies_lambda_surrogate_energy_threshold(0.99);
+    set_ies_lambda_surrogate_transforms("normal_score");
+    set_ies_lambda_surrogate_rowwise_groups_file("");
+    set_ies_lambda_surrogate_recheck_with_fom(false);
+    set_ies_lambda_surrogate_save_train(false);
+    set_ies_lambda_surrogate_save_pmat(false);
+    set_ies_lambda_surrogate_min_train_reals(30);
 
 	// DA parameters
 	//set_da_use_ies(false);

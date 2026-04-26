@@ -46,6 +46,7 @@ target_link_libraries(pestpp_com
   common
   rm_abstract
   opt
+  pestpp_dsi
 )
 
 if(BUILD_SHARED_LIBS)

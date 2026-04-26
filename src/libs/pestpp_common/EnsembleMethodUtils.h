@@ -2,6 +2,7 @@
 #define ENSEMBLEMETHODUTILS_H_
 
 #include <map>
+#include <memory>
 #include <random>
 #include <mutex>
 #include <thread>
@@ -17,6 +18,13 @@
 #include "ObjectiveFunc.h"
 #include "Localizer.h"
 #include "network_package.h"
+
+// Forward decls for pestpp_dsi members held by EnsembleMethod (full
+// include lives in EnsembleMethodUtils.cpp to keep this header light).
+namespace pestpp_dsi {
+    class DsiEmulator;
+    class DsiTrainingStore;
+}
 
 enum chancePoints { ALL, SINGLE };
 
@@ -230,6 +238,14 @@ public:
     void solve_multimodal(int num_threads, double cur_lam, bool use_glm_form, ParameterEnsemble& pe_upgrade, unordered_map<string,pair<vector<string>, vector<string>>>& loc_map, double mm_alpha);
     void update_multimodal_components(const double mm_alpha);
 
+    // DSI lambda surrogate (plan §7.4): when enabled before solve(),
+    // EnsembleSolver captures D_anom * X3 from the canonical
+    // nonlocalized upgrade math and exposes it via the accessor below.
+    // Capture is a no-op for localized / multimodal paths in Phase 3.
+    void set_capture_obs_delta(bool b) { capture_obs_delta_ = b; }
+    bool get_capture_obs_delta() const { return capture_obs_delta_; }
+    const Eigen::MatrixXd& get_obs_delta_linearised() const { return obs_delta_linearised_; }
+
 
 private:
 	PerformanceLog* performance_log;
@@ -263,6 +279,11 @@ private:
     void initialize_for_mm_solve();
 	void nonlocalized_solve(double cur_lam,bool use_glm_form, ParameterEnsemble& pe_upgrade,
                          string center_on=string(), vector<int> real_idxs=vector<int>(),Eigen::VectorXd q_vec=Eigen::VectorXd());
+
+    // DSI lambda surrogate state — written by nonlocalized_solve when
+    // capture_obs_delta_ is true; read via get_obs_delta_linearised().
+    bool capture_obs_delta_ = false;
+    Eigen::MatrixXd obs_delta_linearised_;
 
 };
 
@@ -317,7 +338,8 @@ public:
                            const Eigen::MatrixXd& Am, Eigen::MatrixXd& obs_resid,Eigen::MatrixXd& obs_diff, Eigen::MatrixXd& upgrade_1,
                            Eigen::MatrixXd& obs_err, const Eigen::DiagonalMatrix<double, Eigen::Dynamic>& weights,
                            const Eigen::DiagonalMatrix<double, Eigen::Dynamic>& parcov_inv,
-                           const vector<string>& act_obs_names,const vector<string>& act_par_names);
+                           const vector<string>& act_obs_names,const vector<string>& act_par_names,
+                           Eigen::MatrixXd* obs_delta_linearised_out = nullptr);
 protected:
 	PerformanceLog* performance_log;
 	Localizer::How how;
@@ -358,6 +380,9 @@ public:
 	EnsembleMethod(Pest& _pest_scenario, FileManager& _file_manager,
 		OutputFileWriter& _output_file_writer, PerformanceLog* _performance_log,
 		RunManagerAbstract* _run_mgr_ptr, string _alg_tag="EnsembleMethod");
+	// Explicit destructor declared so unique_ptr<DsiEmulator/...> holders
+	// don't need full pestpp_dsi types in this header.
+	virtual ~EnsembleMethod();
 
 	virtual void throw_em_error(string message);
 	bool should_terminate(int current_n_iter_mean=0);
@@ -453,6 +478,28 @@ protected:
     ObservationInfo org_obs_info;
     string dense_file_ext = ".bin";
 
+    // DSI lambda surrogate state. Forward-declared so this header
+    // stays decoupled from pestpp_dsi headers in the public API; the
+    // .cpp owns the include.
+    std::unique_ptr<pestpp_dsi::DsiEmulator> dsi_emulator_;
+    std::unique_ptr<pestpp_dsi::DsiTrainingStore> dsi_training_store_;
+    // Tracks consecutive iterations where the surrogate-driven
+    // best_mean > acc_phi check triggered an iter abandon. Reset to 0
+    // each time an iter is accepted and the training-store append hook
+    // runs. Used only for rec-file warnings; we do NOT auto-disable
+    // the surrogate or auto-bump ies_accept_phi_fac.
+    int consecutive_surrogate_abandons_ = 0;
+    // Set to true at the start of each lambda-loop iteration when the
+    // surrogate path actually predicted obs ensembles for the subset.
+    // Read by the abandon-branch warning so we don't blame the
+    // surrogate for FOM-fallback abandons.
+    bool surrogate_active_this_iter_ = false;
+    // Per-(λ, scale) relative disagreement |linear_phi - dsi_phi| /
+    // max(|linear_phi|, eps), populated only when surrogate method is
+    // "both". Used by the disagreement-driven recheck_with_fom path
+    // to choose which candidate to FOM-validate.
+    std::vector<double> last_surrogate_disagreement_;
+
 
 	bool solve_glm(int cycle = NetPackage::NULL_DA_CYCLE);
 
@@ -463,6 +510,27 @@ protected:
 	vector<int> run_ensemble(ParameterEnsemble& _pe, ObservationEnsemble& _oe, const vector<int>& real_idxs = vector<int>(), int cycle=NetPackage::NULL_DA_CYCLE);
 
 	vector<ObservationEnsemble> run_lambda_ensembles(vector<ParameterEnsemble>& pe_lams, vector<double>& lam_vals, vector<double>& scale_vals, int cycle, vector<int>& pe_subset_idxs, vector<int>& oe_subset_idxs);
+
+	// DSI lambda surrogate (plan §7.3): instead of running FOM on every
+	// (lam, scale) candidate, build the per-candidate observation
+	// ensemble from a free linearised tangent + (optionally) a DSI
+	// predict/project refinement. `method` selects the prediction
+	// path: "dsi" runs the linear tangent then refines through DSI
+	// (default), "linear" returns the bare linear tangent (exact for
+	// linear forward models, no DSI fit needed), "both" runs both
+	// paths and logs the per-(λ, scale) phi disagreement before
+	// returning the DSI prediction as canonical.
+	// `obs_delta_by_cur_lam` is keyed by the inflation-factor value
+	// the lambda-loop used (= lam_vals[i] for the matching pe_lam);
+	// each value is the (n_act_obs x n_real_full) capture from the
+	// canonical EnsembleSolver pass for that cur_lam.
+	std::vector<ObservationEnsemble> predict_lambda_ensembles_surrogate(
+	    std::vector<ParameterEnsemble>& pe_lams,
+	    std::vector<double>& lam_vals,
+	    std::vector<double>& scale_vals,
+	    const std::vector<int>& subset_idxs,
+	    const std::map<double, Eigen::MatrixXd>& obs_delta_by_cur_lam,
+	    const std::string& method = "dsi");
 
 	void report_and_save(int cycle);
 

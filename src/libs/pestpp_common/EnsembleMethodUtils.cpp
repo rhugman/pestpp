@@ -23,6 +23,15 @@
 #include "RunManagerAbstract.h"
 #include "utilities.h"
 
+// pestpp_dsi: included in this TU so the unique_ptr destructors and
+// surrogate-helper code see the full DsiEmulator / DsiTrainingStore
+// types. The header keeps the forward decls only.
+#include "DsiEmulator.h"
+#include "DsiTrainingStore.h"
+
+#include <chrono>
+#include <fstream>
+
 
 
 
@@ -1026,8 +1035,10 @@ void EnsembleSolver::nonlocalized_solve(double cur_lam,bool use_glm_form, Parame
     obs_resid.transposeInPlace();
     par_resid.transposeInPlace();
     obs_err.transposeInPlace();
+    Eigen::MatrixXd* odl_out = capture_obs_delta_ ? &obs_delta_linearised_ : nullptr;
     UpgradeThread::ensemble_solution(iter,verbose_level,maxsing,0,0,use_prior_scaling,use_approx,use_glm_form,cur_lam,eigthresh,par_resid,
-                      par_diff,Am,obs_resid,obs_diff,upgrade_1,obs_err,local_weights,parcov_inv, act_obs_names,act_par_names);
+                      par_diff,Am,obs_resid,obs_diff,upgrade_1,obs_err,local_weights,parcov_inv, act_obs_names,act_par_names,
+                      odl_out);
     pe_upgrade.add_2_cols_ip(act_par_names, upgrade_1);
 
 
@@ -1196,7 +1207,8 @@ void UpgradeThread::ensemble_solution(const int iter, const int verbose_level,co
                               const Eigen::MatrixXd& Am, Eigen::MatrixXd& obs_resid,Eigen::MatrixXd& obs_diff, Eigen::MatrixXd& upgrade_1,
                               Eigen::MatrixXd& obs_err, const Eigen::DiagonalMatrix<double, Eigen::Dynamic>& weights,
                               const Eigen::DiagonalMatrix<double, Eigen::Dynamic>& parcov_inv,
-                              const vector<string>& act_obs_names,const vector<string>& act_par_names)
+                              const vector<string>& act_obs_names,const vector<string>& act_par_names,
+                              Eigen::MatrixXd* obs_delta_linearised_out)
 {
     class local_utils
     {
@@ -1396,6 +1408,18 @@ void UpgradeThread::ensemble_solution(const int iter, const int verbose_level,co
         //X2.resize(0, 0);
         local_utils::save_mat(verbose_level, thread_id, iter, t_count, "X3", X3);
         upgrade_1 = -1.0 * par_diff * X3;
+
+        // DSI lambda surrogate (plan §7.4): capture the observation-side
+        // linearised delta so the lambda-loop can predict per-(λ, scale)
+        // obs ensembles cheaply. obs_diff has been overwritten by the
+        // in-place SVD (rsvd.solve_ip), so we reconstruct
+        //     D_anom * X3 = U * diag(s) * V^T * V * diag(s) * X2
+        //                 = U * diag(s²) * X2
+        // using the still-live SVD pieces. Ut.transpose() is U.
+        if (obs_delta_linearised_out != nullptr) {
+            *obs_delta_linearised_out =
+                Ut.transpose() * s2.asDiagonal() * X2;
+        }
 
         if (use_prior_scaling) {
             //upgrade_1 = parcov_inv * upgrade_1;
@@ -4192,6 +4216,11 @@ EnsembleMethod::EnsembleMethod(Pest& _pest_scenario, FileManager& _file_manager,
 
 }
 
+// Destructor defined here (where DsiEmulator / DsiTrainingStore are
+// complete) so unique_ptr<...> members in the header can stay
+// forward-declared.
+EnsembleMethod::~EnsembleMethod() = default;
+
 void EnsembleMethod::sanity_checks()
 {
     PestppOptions* ppo = pest_scenario.get_pestpp_options_ptr();
@@ -4636,6 +4665,177 @@ vector<ObservationEnsemble> EnsembleMethod::run_lambda_ensembles(vector<Paramete
 		obs_lams.push_back(_oe);
 	}
 	return obs_lams;
+}
+
+// DSI lambda surrogate predict helper (plan §7.3). Builds per-(λ, scale)
+// observation ensembles from a linearised tangent step + DSI refinement,
+// without launching any FOM runs. Returns a vector matched to pe_lams.
+//
+// Limitations in Phase 3:
+//   - Operates only on act_obs_names (the nnz-weighted observations
+//     pestpp-ies actually scores phi against). Zero-weight columns in
+//     the returned ObservationEnsembles inherit values from `oe`.
+//   - Realization names in each returned ensemble are the subset rows
+//     from the corresponding pe_lam (matches the FOM path's _oe).
+vector<ObservationEnsemble> EnsembleMethod::predict_lambda_ensembles_surrogate(
+    vector<ParameterEnsemble>& pe_lams,
+    vector<double>& lam_vals,
+    vector<double>& scale_vals,
+    const vector<int>& subset_idxs,
+    const map<double, Eigen::MatrixXd>& obs_delta_by_cur_lam,
+    const std::string& method)
+{
+    const bool method_linear = (method == "linear");
+    const bool method_both   = (method == "both");
+    const bool need_dsi      = !method_linear;   // dsi or both both need a fit
+
+    if (need_dsi && !dsi_emulator_) {
+        throw_em_error("predict_lambda_ensembles_surrogate: dsi_emulator_ is null but method requires DSI");
+    }
+    if (pe_lams.size() != lam_vals.size() || pe_lams.size() != scale_vals.size()) {
+        throw_em_error("predict_lambda_ensembles_surrogate: pe_lams/lam_vals/scale_vals size mismatch");
+    }
+
+    // Resolve the act_obs list. In linear mode dsi_emulator_ is null,
+    // so use the EnsembleMethod's act_obs_names directly.
+    const std::vector<std::string>& act_obs =
+        need_dsi ? dsi_emulator_->obs_names() : act_obs_names;
+    Eigen::MatrixXd oe_subset_act = oe.get_eigen(vector<string>(), act_obs);
+    Eigen::MatrixXd oe_subset_rows(static_cast<int>(subset_idxs.size()),
+                                   static_cast<int>(act_obs.size()));
+    for (size_t k = 0; k < subset_idxs.size(); ++k) {
+        oe_subset_rows.row(static_cast<int>(k)) = oe_subset_act.row(subset_idxs[k]);
+    }
+
+    vector<ObservationEnsemble> obs_lams;
+    obs_lams.reserve(pe_lams.size());
+
+    // Container for predictor-disagreement diagnostics in `both` mode.
+    std::vector<double> linear_phi(pe_lams.size(), 0.0);
+    std::vector<double> dsi_phi(pe_lams.size(), 0.0);
+
+    // Pull obsval + weight vectors aligned to act_obs once for phi calcs.
+    // In `both` mode we score linear vs DSI predictions against the same
+    // observed values + weights so the comparison is meaningful.
+    Eigen::VectorXd obsval(act_obs.size());
+    Eigen::VectorXd wght(act_obs.size());
+    if (method_both) {
+        const Observations& ctl_obs = pest_scenario.get_ctl_observations();
+        const ObservationInfo& ctl_obs_info = pest_scenario.get_ctl_observation_info();
+        for (int j = 0; j < static_cast<int>(act_obs.size()); ++j) {
+            obsval(j) = ctl_obs.get_rec(act_obs[j]);
+            wght(j)   = ctl_obs_info.get_weight(act_obs[j]);
+        }
+    }
+
+    auto mean_phi_eq = [&](const Eigen::MatrixXd& oe_pred) -> double {
+        // ((oe - obsval) * wght)^2 summed across obs, averaged across reals.
+        const Eigen::Index n_real = oe_pred.rows();
+        if (n_real == 0) return 0.0;
+        double total = 0.0;
+        for (Eigen::Index r = 0; r < n_real; ++r) {
+            Eigen::VectorXd residual = oe_pred.row(r).transpose() - obsval;
+            residual = residual.cwiseProduct(wght);
+            total += residual.squaredNorm();
+        }
+        return total / static_cast<double>(n_real);
+    };
+
+    for (size_t i = 0; i < pe_lams.size(); ++i) {
+        const double cur_lam = lam_vals[i];
+        const double sf = scale_vals[i];
+        auto it = obs_delta_by_cur_lam.find(cur_lam);
+        if (it == obs_delta_by_cur_lam.end()) {
+            stringstream ss;
+            ss << "predict_lambda_ensembles_surrogate: no obs_delta captured for cur_lam=" << cur_lam;
+            throw_em_error(ss.str());
+        }
+        const Eigen::MatrixXd& delta_full = it->second;       // (n_act_obs, n_real_full)
+        if (delta_full.rows() != static_cast<Eigen::Index>(act_obs.size())) {
+            throw_em_error("predict_lambda_ensembles_surrogate: obs_delta row count != act_obs size");
+        }
+        Eigen::MatrixXd delta_subset(delta_full.rows(),
+                                     static_cast<int>(subset_idxs.size()));
+        for (size_t k = 0; k < subset_idxs.size(); ++k) {
+            delta_subset.col(static_cast<int>(k)) = delta_full.col(subset_idxs[k]);
+        }
+
+        // Linear tangent prediction (cheap; one matrix add).
+        Eigen::MatrixXd oe_linear = oe_subset_rows + sf * delta_subset.transpose();
+
+        // DSI refinement (skipped in linear mode).
+        Eigen::MatrixXd oe_chosen;
+        if (method_linear) {
+            oe_chosen = oe_linear;
+        } else {
+            Eigen::MatrixXd latent = dsi_emulator_->project_oe(oe_linear);
+            Eigen::MatrixXd oe_refined = dsi_emulator_->predict(latent);
+            oe_chosen = oe_refined;
+            if (method_both) {
+                linear_phi[i] = mean_phi_eq(oe_linear);
+                dsi_phi[i]    = mean_phi_eq(oe_refined);
+            }
+        }
+
+        // Wrap into ObservationEnsemble (same template as FOM path).
+        ObservationEnsemble _oe = oe;
+        _oe.keep_rows(subset_idxs);
+        const vector<string>& full_var_names = _oe.get_var_names();
+        std::map<std::string, int> full_var_to_col;
+        for (int j = 0; j < static_cast<int>(full_var_names.size()); ++j) {
+            full_var_to_col[full_var_names[j]] = j;
+        }
+        Eigen::MatrixXd reals = _oe.get_eigen();
+        for (int j = 0; j < static_cast<int>(act_obs.size()); ++j) {
+            auto vit = full_var_to_col.find(act_obs[j]);
+            if (vit == full_var_to_col.end()) {
+                stringstream ss;
+                ss << "predict_lambda_ensembles_surrogate: act_obs '" << act_obs[j]
+                   << "' not in oe var_names";
+                throw_em_error(ss.str());
+            }
+            reals.col(vit->second) = oe_chosen.col(j);
+        }
+        _oe.set_eigen(reals);
+        obs_lams.push_back(std::move(_oe));
+    }
+
+    // In `both` mode emit the per-candidate disagreement between the
+    // linear and DSI predictions. The disagreement is a free uncertainty
+    // signal: candidates where the two predictors agree are more
+    // trustworthy; candidates where they disagree are where DSI's
+    // distributional adjustment is doing real work (or producing an
+    // artefact). Cache per-iter on the EnsembleMethod for downstream
+    // consumers (recheck_with_fom synthesis path) and log a summary.
+    if (method_both) {
+        last_surrogate_disagreement_.assign(pe_lams.size(), 0.0);
+        double max_disagree = 0.0, mean_disagree = 0.0;
+        for (size_t i = 0; i < pe_lams.size(); ++i) {
+            const double denom = std::max(std::abs(linear_phi[i]), 1e-12);
+            const double rel = std::abs(linear_phi[i] - dsi_phi[i]) / denom;
+            last_surrogate_disagreement_[i] = rel;
+            mean_disagree += rel;
+            if (rel > max_disagree) max_disagree = rel;
+        }
+        mean_disagree /= static_cast<double>(pe_lams.size());
+        stringstream sss;
+        sss << "[DSI-SURROGATE] method=both predictor disagreement: mean="
+            << mean_disagree << " max=" << max_disagree << " (relative phi diff)";
+        message(1, sss.str());
+        for (size_t i = 0; i < pe_lams.size(); ++i) {
+            stringstream s2;
+            s2 << "[DSI-SURROGATE]   candidate " << i
+               << " lam=" << lam_vals[i]
+               << " scale=" << scale_vals[i]
+               << " linear_phi=" << linear_phi[i]
+               << " dsi_phi=" << dsi_phi[i]
+               << " rel_diff=" << last_surrogate_disagreement_[i];
+            message(2, s2.str());
+        }
+    } else {
+        last_surrogate_disagreement_.clear();
+    }
+    return obs_lams;
 }
 
 pair<string,string> EnsembleMethod::save_ensembles(string tag, int cycle, ParameterEnsemble& _pe, ObservationEnsemble& _oe)
@@ -7087,6 +7287,200 @@ bool EnsembleMethod::solve(bool use_mda, vector<double> inflation_factors, vecto
         es.update_multimodal_components(mm_alpha);
     }
 
+    // ----------------- DSI lambda surrogate Site A (plan §7.1) -----------------
+    // Decide whether to predict lambda ensembles via DSI this iter, fit the
+    // emulator if so, and arm EnsembleSolver to capture the observation-side
+    // linearised delta during each call to solve(). Surrogate mode is only
+    // wired for the canonical nonlocalized + non-multimodal upgrade path in
+    // Phase 3; localized / multimodal runs fall back to FOM lambda testing.
+    bool use_surrogate = pest_scenario.get_pestpp_options().get_ies_lambda_surrogate();
+    const std::string surrogate_method =
+        pest_scenario.get_pestpp_options().get_ies_lambda_surrogate_method();
+    if (use_surrogate
+        && surrogate_method != "dsi"
+        && surrogate_method != "linear"
+        && surrogate_method != "both")
+    {
+        ss.str("");
+        ss << "[DSI-SURROGATE] unrecognised ies_lambda_surrogate_method='"
+           << surrogate_method << "'; valid values: dsi | linear | both. "
+           << "Falling back to FOM lambda testing this iter.";
+        message(0, ss.str());
+        use_surrogate = false;
+    }
+    const bool method_linear = (surrogate_method == "linear");
+    const bool surrogate_path_supported = !use_localizer && (mm_alpha == 1.0);
+    if (use_surrogate && !surrogate_path_supported)
+    {
+        message(1, "[DSI-SURROGATE] localizer or mm_alpha != 1.0 — falling back to FOM lambda testing this iter");
+        use_surrogate = false;
+    }
+    std::map<double, Eigen::MatrixXd> obs_delta_by_cur_lam;
+    if (use_surrogate)
+    {
+        if (method_linear)
+        {
+            // Linear-tangent-only mode: skip the DSI fit and the
+            // training-store machinery entirely. The linear predictor
+            // does not learn from accumulated FOM data — it derives
+            // directly from D_anom·X3 captured per cur_lam.
+            ss.str("");
+            ss << "[DSI-SURROGATE] iter=" << iter
+               << " method=linear (no DSI fit; using linear tangent only)";
+            message(1, ss.str());
+            es.set_capture_obs_delta(true);
+        }
+        else
+        {
+        if (!dsi_training_store_)
+            dsi_training_store_.reset(new pestpp_dsi::DsiTrainingStore());
+        // Bootstrap: seed the training store from the prior oe at iter 1
+        // so we have something to fit on before any FOM remainder sweep.
+        if (dsi_training_store_->n_realisations() == 0)
+        {
+            Eigen::MatrixXd prior_obs = oe.get_eigen(std::vector<std::string>(), act_obs_names);
+            dsi_training_store_->append(prior_obs, act_obs_names);
+            message(1, "[DSI-SURROGATE] seeded training store from prior oe, n_real:",
+                    dsi_training_store_->n_realisations());
+        }
+        const int store_n = dsi_training_store_->n_realisations();
+        const int min_reals = pest_scenario.get_pestpp_options().get_ies_lambda_surrogate_min_train_reals();
+        if (store_n < min_reals)
+        {
+            ss.str("");
+            ss << "[DSI-SURROGATE] training set (" << store_n
+               << ") < min_train_reals (" << min_reals
+               << "); skipping surrogate this iter";
+            message(1, ss.str());
+            use_surrogate = false;
+        }
+        else
+        {
+            // Build emulator config from pestpp_options.
+            pestpp_dsi::DsiEmulator::Config cfg;
+            cfg.obs_names = act_obs_names;
+            cfg.energy_threshold =
+                pest_scenario.get_pestpp_options().get_ies_lambda_surrogate_energy_threshold();
+            const std::string transforms_str =
+                pest_scenario.get_pestpp_options().get_ies_lambda_surrogate_transforms();
+            if (transforms_str == "normal_score")
+            {
+                pestpp_dsi::DsiEmulator::TransformSpec spec;
+                spec.kind = pestpp_dsi::DsiEmulator::TransformSpec::Kind::NormalScore;
+                cfg.transforms.push_back(spec);
+            }
+            else if (transforms_str == "normal_score_quad")
+            {
+                pestpp_dsi::DsiEmulator::TransformSpec spec;
+                spec.kind = pestpp_dsi::DsiEmulator::TransformSpec::Kind::NormalScoreQuad;
+                cfg.transforms.push_back(spec);
+            }
+            else if (transforms_str == "log10")
+            {
+                pestpp_dsi::DsiEmulator::TransformSpec spec;
+                spec.kind = pestpp_dsi::DsiEmulator::TransformSpec::Kind::Log10;
+                cfg.transforms.push_back(spec);
+            }
+            // else "none" / empty / unrecognised: identity pipeline.
+            cfg.seed = static_cast<unsigned long>(pest_scenario.get_pestpp_options().get_random_seed());
+            try
+            {
+                message(1, "[DSI-SURROGATE] fitting DSI on training rows:", store_n);
+                const auto t0 = std::chrono::steady_clock::now();
+                dsi_emulator_.reset(new pestpp_dsi::DsiEmulator(cfg));
+                dsi_emulator_->fit(dsi_training_store_->matrix_for(act_obs_names));
+                const auto t1 = std::chrono::steady_clock::now();
+                const double fit_seconds =
+                    std::chrono::duration<double>(t1 - t0).count();
+
+                // Energy fraction = sum(s_kept^2) / sum(s_full^2). With
+                // energy_threshold=1.0 this is 1.0; otherwise it is the
+                // exact fraction retained.
+                const Eigen::VectorXd& s = dsi_emulator_->singular_values();
+                const double s_sq_sum = s.array().square().sum();
+                // Approximate "total" via SVD properties — compute relative
+                // to the kept set's norm; for diagnostics, this is close
+                // to the requested energy_threshold.
+                ss.str("");
+                ss << "[DSI-SURROGATE] iter=" << iter
+                   << " train_n=" << store_n
+                   << " ncomp=" << dsi_emulator_->n_components()
+                   << " s_sq_sum=" << s_sq_sum
+                   << " fit_seconds=" << fit_seconds;
+                // message() already mirrors to the rec file — no need
+                // to also frec << it.
+                message(1, ss.str());
+                es.set_capture_obs_delta(true);
+
+                // Plan §8 / §9: optional artefacts for offline diff
+                // against pyemu (debugging the surrogate).
+                const bool save_train =
+                    pest_scenario.get_pestpp_options().get_ies_lambda_surrogate_save_train();
+                const bool save_pmat =
+                    pest_scenario.get_pestpp_options().get_ies_lambda_surrogate_save_pmat();
+                if (save_train)
+                {
+                    ss.str("");
+                    ss << file_manager.get_base_filename() << "." << iter
+                       << ".dsi.training.csv";
+                    Eigen::MatrixXd train_mat = dsi_training_store_->matrix_for(act_obs_names);
+                    std::ofstream tf(ss.str());
+                    tf << "real";
+                    for (const auto& nm : act_obs_names) tf << "," << nm;
+                    tf << "\n";
+                    for (int r = 0; r < train_mat.rows(); ++r)
+                    {
+                        tf << "real_" << r;
+                        for (int c = 0; c < train_mat.cols(); ++c)
+                            tf << "," << train_mat(r, c);
+                        tf << "\n";
+                    }
+                    tf.close();
+                    message(1, "[DSI-SURROGATE] training set saved to " + ss.str());
+                }
+                if (save_pmat)
+                {
+                    ss.str("");
+                    ss << file_manager.get_base_filename() << "." << iter
+                       << ".dsi.pmat.csv";
+                    const Eigen::MatrixXd& pmat = dsi_emulator_->pmat();
+                    const Eigen::VectorXd& ovals = dsi_emulator_->ovals();
+                    std::ofstream pf(ss.str());
+                    pf << "obs,oval";
+                    for (int k = 0; k < pmat.cols(); ++k) pf << ",p_" << k;
+                    pf << "\n";
+                    for (int r = 0; r < pmat.rows(); ++r)
+                    {
+                        pf << act_obs_names[r] << "," << ovals(r);
+                        for (int c = 0; c < pmat.cols(); ++c)
+                            pf << "," << pmat(r, c);
+                        pf << "\n";
+                    }
+                    pf.close();
+                    // Also dump singular values for the same iter.
+                    ss.str("");
+                    ss << file_manager.get_base_filename() << "." << iter
+                       << ".dsi.s_kept.csv";
+                    std::ofstream sf(ss.str());
+                    sf << "s\n";
+                    for (int k = 0; k < s.size(); ++k) sf << s(k) << "\n";
+                    sf.close();
+                    message(1, "[DSI-SURROGATE] pmat + s_kept saved");
+                }
+            }
+            catch (const std::exception& ex)
+            {
+                ss.str("");
+                ss << "[DSI-SURROGATE] DSI fit failed; falling back to FOM: " << ex.what();
+                message(0, ss.str());
+                dsi_emulator_.reset();
+                use_surrogate = false;
+            }
+        }
+        }   // end of "else" branch — the dsi/both fit path; method_linear skips it
+    }
+    // ---------------------------------------------------------------------------
+
 
     //solve for each factor
     for (auto& cur_lam : inflation_factors)
@@ -7109,6 +7503,14 @@ bool EnsembleMethod::solve(bool use_mda, vector<double> inflation_factors, vecto
         }
 		else{
             es.solve(num_threads, cur_lam, !use_mda, pe_upgrade, loc_map);
+		}
+
+		// DSI lambda surrogate: capture the observation-side linearised
+		// delta produced for THIS cur_lam so the surrogate predict can
+		// scale it by the backtrack factor for each (cur_lam, sf) entry.
+		if (use_surrogate)
+		{
+		    obs_delta_by_cur_lam[cur_lam] = es.get_obs_delta_linearised();
 		}
 
 		map<string, double> norm_map;
@@ -7206,9 +7608,34 @@ bool EnsembleMethod::solve(bool use_mda, vector<double> inflation_factors, vecto
 
 	message(0, "running upgrade ensembles");
 	vector<ObservationEnsemble> oe_lams;
-	
-	//if we are saving upgrades to disk
-	if (pe_filenames.size() > 0)
+
+	// ---- DSI lambda surrogate Site B (plan §7.2) ----
+	surrogate_active_this_iter_ = false;
+	const bool surrogate_predict_ready = use_surrogate
+	    && (method_linear || dsi_emulator_);
+	if (surrogate_predict_ready)
+	{
+	    ss.str("");
+	    ss << "[DSI-SURROGATE] predicting lambda ensembles via surrogate (method="
+	       << surrogate_method << "; no FOM runs)";
+	    message(1, ss.str());
+	    const auto pred_t0 = std::chrono::steady_clock::now();
+	    oe_lams = predict_lambda_ensembles_surrogate(
+	        pe_lams, lam_vals, scale_vals, subset_idxs, obs_delta_by_cur_lam,
+	        surrogate_method);
+	    const auto pred_t1 = std::chrono::steady_clock::now();
+	    const double pred_seconds =
+	        std::chrono::duration<double>(pred_t1 - pred_t0).count();
+	    ss.str("");
+	    ss << "[DSI-SURROGATE] iter=" << iter
+	       << " method=" << surrogate_method
+	       << " n_lambda_candidates=" << pe_lams.size()
+	       << " predict_seconds=" << pred_seconds;
+	    // message() already mirrors to the rec file.
+	    message(1, ss.str());
+	    surrogate_active_this_iter_ = true;
+	}
+	else if (pe_filenames.size() > 0)
 	{
 		vector<int> temp;
 		for (int i = 0; i < subset_idxs.size(); i++)
@@ -7239,6 +7666,110 @@ bool EnsembleMethod::solve(bool use_mda, vector<double> inflation_factors, vecto
     double acc_fac = pest_scenario.get_pestpp_options().get_ies_accept_phi_fac();
     double lam_inc = pest_scenario.get_pestpp_options().get_ies_lambda_inc_fac();
     double lam_dec = pest_scenario.get_pestpp_options().get_ies_lambda_dec_fac();
+
+    // ---- DSI lambda surrogate Phase 4+ recheck-with-FOM hook ----
+    // When surrogate_active && ies_lambda_surrogate_recheck_with_fom: run
+    // FOM on the subset for ONE chosen (lam, scale) candidate; replace
+    // oe_lams[recheck_idx] with the FOM result. Choice of candidate:
+    //   * method=both: highest predictor disagreement (most informative
+    //     validation point — synthesis (3))
+    //   * else: surrogate-best phi (cheapest interpretation — (2))
+    // The downstream inner phi-loop and best_mean > acc_phi check
+    // therefore see FOM-truth phi at the validated candidate, which
+    // breaks the surrogate-induced abandon deadlock.
+    if (surrogate_active_this_iter_
+        && pest_scenario.get_pestpp_options().get_ies_lambda_surrogate_recheck_with_fom()
+        && pe_lams.size() > 0)
+    {
+        // Compute surrogate-predicted mean phi per candidate so we can
+        // pick the surrogate-best as a fallback recheck target and
+        // also diff against the FOM phi we will compute.
+        std::vector<double> surrogate_phi(pe_lams.size(),
+            std::numeric_limits<double>::infinity());
+        int surrogate_best_idx = -1;
+        double surrogate_best_phi = std::numeric_limits<double>::infinity();
+        for (int i = 0; i < static_cast<int>(pe_lams.size()); ++i) {
+            if (oe_lams[i].shape().first == 0) continue;
+            ph.update(oe_lams[i], pe_lams[i], weights);
+            const double m = ph.get_representative_phi(L2PhiHandler::phiType::COMPOSITE);
+            surrogate_phi[i] = m;
+            if (m < surrogate_best_phi) {
+                surrogate_best_phi = m;
+                surrogate_best_idx = i;
+            }
+        }
+
+        int recheck_idx = surrogate_best_idx;
+        std::string recheck_reason = "surrogate-best phi";
+        if (surrogate_method == "both"
+            && !last_surrogate_disagreement_.empty()
+            && last_surrogate_disagreement_.size() == pe_lams.size())
+        {
+            int hi_disagree_idx = -1;
+            double hi_disagree = -1.0;
+            for (int i = 0; i < static_cast<int>(pe_lams.size()); ++i) {
+                if (oe_lams[i].shape().first == 0) continue;
+                if (last_surrogate_disagreement_[i] > hi_disagree) {
+                    hi_disagree = last_surrogate_disagreement_[i];
+                    hi_disagree_idx = i;
+                }
+            }
+            if (hi_disagree_idx >= 0) {
+                recheck_idx = hi_disagree_idx;
+                recheck_reason = "highest predictor disagreement (rel="
+                    + std::to_string(hi_disagree) + ")";
+            }
+        }
+
+        if (recheck_idx >= 0) {
+            ss.str("");
+            ss << "[DSI-SURROGATE] recheck-with-FOM: rechecking candidate "
+               << recheck_idx << " (lam=" << lam_vals[recheck_idx]
+               << " scale=" << scale_vals[recheck_idx]
+               << ") — selected by " << recheck_reason;
+            message(1, ss.str());
+
+            // FOM-run the subset for just the chosen (lam, scale).
+            // Reuse run_lambda_ensembles with a single-element batch.
+            std::vector<ParameterEnsemble> pe_one = { pe_lams[recheck_idx] };
+            std::vector<double> lam_one = { lam_vals[recheck_idx] };
+            std::vector<double> scale_one = { scale_vals[recheck_idx] };
+            const auto t0 = std::chrono::steady_clock::now();
+            std::vector<ObservationEnsemble> oe_one =
+                run_lambda_ensembles(pe_one, lam_one, scale_one, cycle, subset_idxs, subset_idxs);
+            const auto t1 = std::chrono::steady_clock::now();
+            const double recheck_seconds =
+                std::chrono::duration<double>(t1 - t0).count();
+
+            if (oe_one[0].shape().first > 0) {
+                // Compute FOM phi for the recheck candidate.
+                ph.update(oe_one[0], pe_lams[recheck_idx], weights);
+                const double fom_phi =
+                    ph.get_representative_phi(L2PhiHandler::phiType::COMPOSITE);
+                const double surr_phi = surrogate_phi[recheck_idx];
+                const double rel_diff = std::abs(fom_phi - surr_phi)
+                    / std::max(std::abs(surr_phi), 1e-12);
+                ss.str("");
+                ss << "[DSI-SURROGATE] recheck result: surrogate_phi="
+                   << surr_phi << " fom_phi=" << fom_phi
+                   << " rel_diff=" << rel_diff
+                   << " (recheck_seconds=" << recheck_seconds << ")";
+                message(1, ss.str());
+                // Replace oe_lams[recheck_idx] with the FOM result so
+                // the downstream inner phi-loop and acc_phi check use
+                // FOM truth at this candidate.
+                oe_lams[recheck_idx] = oe_one[0];
+            } else {
+                ss.str("");
+                ss << "[DSI-SURROGATE] recheck-with-FOM: all reals failed "
+                   << "for candidate " << recheck_idx
+                   << "; surrogate prediction left in place";
+                message(0, ss.str());
+            }
+        }
+    }
+    // -------------------------------------------------------------
+
 	ObservationEnsemble oe_lam_best(&pest_scenario);
 	bool echo = false;
 	if (verbose_level > 1)
@@ -7252,7 +7783,14 @@ bool EnsembleMethod::solve(bool use_mda, vector<double> inflation_factors, vecto
 
 		{
 			ss.str("");
-			ss << file_manager.get_base_filename() << "." << iter << "." << lam_vals[i] << ".lambda." << scale_vals[i] << ".scale.obs";
+			// Surrogate-derived obs ensembles get an `_dsi` filename
+			// tag so they are forensically distinguishable from
+			// FOM-evaluated artefacts. The tag is applied for any
+			// surrogate path (dsi/linear/both); par ensemble filenames
+			// stay untagged because the par-upgrade math is identical
+			// in both modes (preserves pp_oracle cross-checks).
+			const std::string obs_tag = surrogate_active_this_iter_ ? "scale.obs_dsi" : "scale.obs";
+			ss << file_manager.get_base_filename() << "." << iter << "." << lam_vals[i] << ".lambda." << scale_vals[i] << "." << obs_tag;
 
             if (pest_scenario.get_pestpp_options().get_save_dense())
             {
@@ -7355,9 +7893,42 @@ bool EnsembleMethod::solve(bool use_mda, vector<double> inflation_factors, vecto
                 message(1,
                         "abandoning current upgrade ensembles, returning to upgrade calculations and increasing lambda to ",
                         new_lam);
-
             }
             message(1, "returning to upgrade calculations...");
+
+            // DSI lambda surrogate: both sub-branches of the partial-
+            // update logic above land here and always `return false`
+            // (the iter is abandoned). When the surrogate is what
+            // drove the `best_mean > acc_phi` decision, this means
+            // the training store will not grow for this iter (the
+            // remainder FOM run never happens). Track and warn so
+            // the user sees a clear signal that the surrogate's
+            // predicted phi may be over-pessimistic. We do NOT auto-
+            // bump ies_accept_phi_fac or auto-disable the surrogate.
+            if (surrogate_active_this_iter_)
+            {
+                consecutive_surrogate_abandons_++;
+                ss.str("");
+                ss << "[DSI-SURROGATE] surrogate-induced abandon: "
+                   << "best subset mean phi (surrogate-predicted) "
+                   << "exceeded ies_accept_phi_fac threshold; "
+                   << "no FOM remainder ran this iter so the "
+                   << "training store did not grow. Consecutive "
+                   << "surrogate-induced abandons: "
+                   << consecutive_surrogate_abandons_;
+                message(0, ss.str());
+                if (consecutive_surrogate_abandons_ >= 2)
+                {
+                    message(0,
+                        "[DSI-SURROGATE] WARNING: surrogate has triggered "
+                        ">= 2 consecutive iter abandons. The surrogate's "
+                        "predicted phi may be over-pessimistic relative "
+                        "to FOM. Consider loosening ies_accept_phi_fac, "
+                        "raising ies_lambda_surrogate_min_train_reals to "
+                        "skip surrogate use early in the run, or disabling "
+                        "the surrogate (ies_lambda_surrogate=false).");
+                }
+            }
 
             return false;
         }
@@ -7503,6 +8074,29 @@ bool EnsembleMethod::solve(bool use_mda, vector<double> inflation_factors, vecto
 		oe_lam_best.append_other_rows(remaining_oe_lam);
 		assert(pe_lams[best_idx].shape().first == oe_lam_best.shape().first);
         drop_bad_reals(pe_lams[best_idx], oe_lam_best);
+
+		// DSI lambda surrogate training-store hook: append ONLY the
+		// FOM-evaluated remainder rows (remaining_oe_lam), not all of
+		// oe_lam_best. The latter contains the surrogate-predicted
+		// subset rows mixed with the FOM remainder; appending the
+		// surrogate-predicted rows back to the training store creates
+		// a self-referential loop that progressively biases the
+		// emulator toward its own prior predictions. The remainder
+		// rows are FOM-evaluated ground truth and are the right input
+		// for posterior-aware refit on the next iter.
+		if (pest_scenario.get_pestpp_options().get_ies_lambda_surrogate()
+		    && remaining_oe_lam.shape().first > 0)
+		{
+		    if (!dsi_training_store_)
+		        dsi_training_store_.reset(new pestpp_dsi::DsiTrainingStore());
+		    Eigen::MatrixXd new_rows = remaining_oe_lam.get_eigen(std::vector<std::string>(), act_obs_names);
+		    dsi_training_store_->append(new_rows, act_obs_names);
+		    consecutive_surrogate_abandons_ = 0;
+		    ss.str("");
+		    ss << "[DSI-SURROGATE] training store now has "
+		       << dsi_training_store_->n_realisations() << " realizations";
+		    message(1, ss.str());
+		}
 		if (oe_lam_best.shape().first == 0)
 		{
 			//throw_em_error(string("all realization dropped after finishing subset runs...something might be wrong..."));

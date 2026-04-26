@@ -557,6 +557,30 @@ public:
     void set_ies_run_realname(string name) {ies_run_realname = name;}
     string get_ies_run_realname() const {return ies_run_realname;}
 
+    // --- DSI lambda surrogate accessors (plan §9) ---
+    bool get_ies_lambda_surrogate() const { return ies_lambda_surrogate; }
+    void set_ies_lambda_surrogate(bool b) { ies_lambda_surrogate = b; }
+    string get_ies_lambda_surrogate_train_mode() const { return ies_lambda_surrogate_train_mode; }
+    void set_ies_lambda_surrogate_train_mode(string s) { ies_lambda_surrogate_train_mode = s; }
+    string get_ies_lambda_surrogate_method() const { return ies_lambda_surrogate_method; }
+    void set_ies_lambda_surrogate_method(string s) { ies_lambda_surrogate_method = s; }
+    string get_ies_lambda_surrogate_load() const { return ies_lambda_surrogate_load; }
+    void set_ies_lambda_surrogate_load(string s) { ies_lambda_surrogate_load = s; }
+    double get_ies_lambda_surrogate_energy_threshold() const { return ies_lambda_surrogate_energy_threshold; }
+    void set_ies_lambda_surrogate_energy_threshold(double d) { ies_lambda_surrogate_energy_threshold = d; }
+    string get_ies_lambda_surrogate_transforms() const { return ies_lambda_surrogate_transforms; }
+    void set_ies_lambda_surrogate_transforms(string s) { ies_lambda_surrogate_transforms = s; }
+    string get_ies_lambda_surrogate_rowwise_groups_file() const { return ies_lambda_surrogate_rowwise_groups_file; }
+    void set_ies_lambda_surrogate_rowwise_groups_file(string s) { ies_lambda_surrogate_rowwise_groups_file = s; }
+    bool get_ies_lambda_surrogate_recheck_with_fom() const { return ies_lambda_surrogate_recheck_with_fom; }
+    void set_ies_lambda_surrogate_recheck_with_fom(bool b) { ies_lambda_surrogate_recheck_with_fom = b; }
+    bool get_ies_lambda_surrogate_save_train() const { return ies_lambda_surrogate_save_train; }
+    void set_ies_lambda_surrogate_save_train(bool b) { ies_lambda_surrogate_save_train = b; }
+    bool get_ies_lambda_surrogate_save_pmat() const { return ies_lambda_surrogate_save_pmat; }
+    void set_ies_lambda_surrogate_save_pmat(bool b) { ies_lambda_surrogate_save_pmat = b; }
+    int get_ies_lambda_surrogate_min_train_reals() const { return ies_lambda_surrogate_min_train_reals; }
+    void set_ies_lambda_surrogate_min_train_reals(int v) { ies_lambda_surrogate_min_train_reals = v; }
+
     string get_gsa_method() const { return gsa_method; }
 	void set_gsa_method(string _m) { gsa_method = _m; }
 	bool get_gsa_morris_pooled_obs() const { return gsa_morris_pooled_obs; }
@@ -843,6 +867,19 @@ private:
     bool ies_updatebyreals;
     vector<string> ies_aal_indicator_pars;
     string ies_run_realname;
+
+    // --- DSI lambda surrogate (Phase 3 of plan_pestpp_dsi_integration.md) ---
+    bool ies_lambda_surrogate;
+    string ies_lambda_surrogate_train_mode;     // accumulate | prior_only | from_file
+    string ies_lambda_surrogate_method;         // dsi | linear | both
+    string ies_lambda_surrogate_load;
+    double ies_lambda_surrogate_energy_threshold;
+    string ies_lambda_surrogate_transforms;     // CSV: none | log10 | normal_score | normal_score_quad
+    string ies_lambda_surrogate_rowwise_groups_file;
+    bool ies_lambda_surrogate_recheck_with_fom;
+    bool ies_lambda_surrogate_save_train;
+    bool ies_lambda_surrogate_save_pmat;
+    int ies_lambda_surrogate_min_train_reals;
 
 
 
