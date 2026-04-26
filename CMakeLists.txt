@@ -108,6 +108,11 @@ message(STATUS "FORCE_STATIC=${FORCE_STATIC}")
 # Default install directories
 include(GNUInstallDirs)
 
+# Enable CTest. Phase 1 of the DSI integration adds a `dsi`-labelled
+# unit-test suite under src/libs/pestpp_dsi/tests; existing pestpp
+# targets do not currently register tests.
+include(CTest)
+
 # Build main targets in src
 add_subdirectory(src)
 

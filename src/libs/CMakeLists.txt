@@ -15,6 +15,7 @@ endif()
 
 add_subdirectory(common)
 add_subdirectory(opt)
+add_subdirectory(pestpp_dsi)
 add_subdirectory(pestpp_common)
 add_subdirectory(run_managers)
 
