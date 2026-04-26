@@ -32,8 +32,9 @@ public:
         enum class Kind {
             Identity,
             Log10,
-            NormalScore,         // Phase 2
-            NormalScoreQuad      // Phase 2
+            NormalScore,           // NS with clip-to-bounds tail
+            NormalScoreLinear,     // NS with linear (boundary-slope) tail
+            NormalScoreQuad        // NS with Lagrange-quadratic tail (default)
         };
         Kind kind = Kind::Identity;
         // Subset of obs_names this transform acts on. Empty == all.

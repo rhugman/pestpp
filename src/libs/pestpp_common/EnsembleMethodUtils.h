@@ -499,6 +499,15 @@ protected:
     // "both". Used by the disagreement-driven recheck_with_fom path
     // to choose which candidate to FOM-validate.
     std::vector<double> last_surrogate_disagreement_;
+    // Per-(λ, scale) mean phi computed from the FULL-ensemble surrogate
+    // prediction (vs the subset-only oe_lams[i] handed to the inner
+    // phi loop). Used to rank candidates by a stable full-ensemble
+    // signal — Python `dsilam` parity. With wide candidate sets the
+    // 10-real subset prediction's mean phi has too much variance to
+    // pick reliably; the full-ensemble surrogate prediction is
+    // essentially free (one extra matmul per candidate) and matches
+    // what the Python prototype does at lambda_search.py:148-159.
+    std::vector<double> last_surrogate_full_phi_;
 
 
 	bool solve_glm(int cycle = NetPackage::NULL_DA_CYCLE);

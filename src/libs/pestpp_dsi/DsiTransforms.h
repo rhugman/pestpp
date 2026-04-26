@@ -65,15 +65,25 @@ public:
     void inverse(Eigen::MatrixXd& X) const override;
 };
 
-// Normal-score transform — faithful port of
+// Tail-extrapolation policy for NormalScoreTransform on out-of-range inputs:
+//   Clip   — clamp to the boundary value (no extrapolation).
+//   Linear — extend with the slope between the last two training points.
+//            (This is what pyemu mis-labels as "quadratic_extrapolation=True".)
+//   Quad   — Lagrange-quadratic curve through the last three training points
+//            (true quadratic; smooth tail continuation).
+enum class NSTailMode { Clip, Linear, Quad };
+
+// Normal-score transform — port of
 // pyemu.emulators.transformers.NormalScoreTransformer. Per-column
 // state is `originals` (sorted, smoothed, monotone-enforced training
 // values) and `z_scores` (sample-then-sort standard normals). Forward
 // transform is linear interpolation `originals -> z_scores`; inverse
-// is `z_scores -> originals`. Out-of-range inputs are clamped or
-// linearly extrapolated depending on `quadratic_extrapolation` (the
-// flag name is a misnomer — the code is linear in both modes; see
-// plan §5.3 and transformers.py:533-549, :591-609).
+// is `z_scores -> originals`. Out-of-range inputs follow `tail_mode_`.
+//
+// Note on naming: pyemu's `quadratic_extrapolation` flag is a misnomer
+// — its True branch is LINEAR (boundary slope), not quadratic. This
+// class exposes a 3-state mode (Clip / Linear / Quad) where Quad is
+// the true Lagrange-quadratic continuation through the last 3 points.
 //
 // Reproducibility: production NS uses the C++ RNG seeded from cfg.seed;
 // for golden tests against pyemu, callers can pre-seed per-column
@@ -82,7 +92,7 @@ public:
 class NormalScoreTransform : public DsiTransform {
 public:
     explicit NormalScoreTransform(std::vector<int> cols_idx = {},
-                                  bool quadratic_extrapolation = false,
+                                  NSTailMode tail_mode = NSTailMode::Quad,
                                   double tol = 1e-7,
                                   int max_samples = 1000000,
                                   unsigned long seed = 0);
@@ -123,7 +133,7 @@ private:
     void apply_one(Eigen::MatrixXd& X, int j, const ColState& st) const;
     void inverse_one(Eigen::MatrixXd& X, int j, const ColState& st) const;
 
-    bool quadratic_extrapolation_;
+    NSTailMode tail_mode_;
     double tol_;
     int max_samples_;
     bool fitted_ = false;

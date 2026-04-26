@@ -4715,11 +4715,12 @@ vector<ObservationEnsemble> EnsembleMethod::predict_lambda_ensembles_surrogate(
     std::vector<double> dsi_phi(pe_lams.size(), 0.0);
 
     // Pull obsval + weight vectors aligned to act_obs once for phi calcs.
-    // In `both` mode we score linear vs DSI predictions against the same
-    // observed values + weights so the comparison is meaningful.
+    // Used in three places: (1) `both` mode disagreement diagnostics,
+    // (2) per-candidate full-ensemble surrogate phi for ranking
+    // (Python parity), (3) recheck-candidate selection.
     Eigen::VectorXd obsval(act_obs.size());
     Eigen::VectorXd wght(act_obs.size());
-    if (method_both) {
+    {
         const Observations& ctl_obs = pest_scenario.get_ctl_observations();
         const ObservationInfo& ctl_obs_info = pest_scenario.get_ctl_observation_info();
         for (int j = 0; j < static_cast<int>(act_obs.size()); ++j) {
@@ -4740,6 +4741,9 @@ vector<ObservationEnsemble> EnsembleMethod::predict_lambda_ensembles_surrogate(
         }
         return total / static_cast<double>(n_real);
     };
+
+    last_surrogate_full_phi_.assign(pe_lams.size(),
+        std::numeric_limits<double>::infinity());
 
     for (size_t i = 0; i < pe_lams.size(); ++i) {
         const double cur_lam = lam_vals[i];
@@ -4776,6 +4780,24 @@ vector<ObservationEnsemble> EnsembleMethod::predict_lambda_ensembles_surrogate(
                 dsi_phi[i]    = mean_phi_eq(oe_refined);
             }
         }
+
+        // Full-ensemble surrogate prediction for ranking. Mirrors the
+        // Python `dsilam` prototype (lambda_search.py:148-159) where
+        // candidates are scored on the full posterior surrogate, not
+        // the 10-real subset. The subset prediction (oe_chosen) above
+        // is what the inner phi loop / recheck pipeline expects;
+        // ranking happens on this full-ensemble phi instead. Cost:
+        // one extra matmul per candidate in DSI mode (essentially
+        // free vs an FOM run).
+        Eigen::MatrixXd oe_linear_full = oe_subset_act + sf * delta_full.transpose();
+        Eigen::MatrixXd oe_chosen_full;
+        if (method_linear) {
+            oe_chosen_full = oe_linear_full;
+        } else {
+            Eigen::MatrixXd latent_full = dsi_emulator_->project_oe(oe_linear_full);
+            oe_chosen_full = dsi_emulator_->predict(latent_full);
+        }
+        last_surrogate_full_phi_[i] = mean_phi_eq(oe_chosen_full);
 
         // Wrap into ObservationEnsemble (same template as FOM path).
         ObservationEnsemble _oe = oe;
@@ -7363,10 +7385,22 @@ bool EnsembleMethod::solve(bool use_mda, vector<double> inflation_factors, vecto
                 pest_scenario.get_pestpp_options().get_ies_lambda_surrogate_energy_threshold();
             const std::string transforms_str =
                 pest_scenario.get_pestpp_options().get_ies_lambda_surrogate_transforms();
+            // Normal-score tail-extrapolation parsing:
+            //   "normal_score"        → clip to training range (no extrapolation)
+            //   "normal_score_linear" → linear (boundary-slope) extrapolation
+            //   "normal_score_quad"   → Lagrange-quadratic extrapolation through
+            //                            the last 3 training points (default;
+            //                            faithful tail continuation)
             if (transforms_str == "normal_score")
             {
                 pestpp_dsi::DsiEmulator::TransformSpec spec;
                 spec.kind = pestpp_dsi::DsiEmulator::TransformSpec::Kind::NormalScore;
+                cfg.transforms.push_back(spec);
+            }
+            else if (transforms_str == "normal_score_linear")
+            {
+                pestpp_dsi::DsiEmulator::TransformSpec spec;
+                spec.kind = pestpp_dsi::DsiEmulator::TransformSpec::Kind::NormalScoreLinear;
                 cfg.transforms.push_back(spec);
             }
             else if (transforms_str == "normal_score_quad")
@@ -7611,6 +7645,7 @@ bool EnsembleMethod::solve(bool use_mda, vector<double> inflation_factors, vecto
 
 	// ---- DSI lambda surrogate Site B (plan §7.2) ----
 	surrogate_active_this_iter_ = false;
+	last_surrogate_full_phi_.clear();
 	const bool surrogate_predict_ready = use_surrogate
 	    && (method_linear || dsi_emulator_);
 	if (surrogate_predict_ready)
@@ -7677,22 +7712,27 @@ bool EnsembleMethod::solve(bool use_mda, vector<double> inflation_factors, vecto
     // The downstream inner phi-loop and best_mean > acc_phi check
     // therefore see FOM-truth phi at the validated candidate, which
     // breaks the surrogate-induced abandon deadlock.
+    int dsi_recheck_idx = -1;  // tracked outside block for inner-phi loop
     if (surrogate_active_this_iter_
         && pest_scenario.get_pestpp_options().get_ies_lambda_surrogate_recheck_with_fom()
         && pe_lams.size() > 0)
     {
-        // Compute surrogate-predicted mean phi per candidate so we can
-        // pick the surrogate-best as a fallback recheck target and
-        // also diff against the FOM phi we will compute.
-        std::vector<double> surrogate_phi(pe_lams.size(),
-            std::numeric_limits<double>::infinity());
+        // Pick surrogate-best from the full-ensemble surrogate phi
+        // (Python parity). Falls back to the subset-based ph.update
+        // path only if last_surrogate_full_phi_ wasn't populated.
         int surrogate_best_idx = -1;
         double surrogate_best_phi = std::numeric_limits<double>::infinity();
+        const bool have_full_phi =
+            (last_surrogate_full_phi_.size() == pe_lams.size());
         for (int i = 0; i < static_cast<int>(pe_lams.size()); ++i) {
             if (oe_lams[i].shape().first == 0) continue;
-            ph.update(oe_lams[i], pe_lams[i], weights);
-            const double m = ph.get_representative_phi(L2PhiHandler::phiType::COMPOSITE);
-            surrogate_phi[i] = m;
+            double m;
+            if (have_full_phi && std::isfinite(last_surrogate_full_phi_[i])) {
+                m = last_surrogate_full_phi_[i];
+            } else {
+                ph.update(oe_lams[i], pe_lams[i], weights);
+                m = ph.get_representative_phi(L2PhiHandler::phiType::COMPOSITE);
+            }
             if (m < surrogate_best_phi) {
                 surrogate_best_phi = m;
                 surrogate_best_idx = i;
@@ -7700,7 +7740,7 @@ bool EnsembleMethod::solve(bool use_mda, vector<double> inflation_factors, vecto
         }
 
         int recheck_idx = surrogate_best_idx;
-        std::string recheck_reason = "surrogate-best phi";
+        std::string recheck_reason = "surrogate-best phi (full-ensemble)";
         if (surrogate_method == "both"
             && !last_surrogate_disagreement_.empty()
             && last_surrogate_disagreement_.size() == pe_lams.size())
@@ -7746,9 +7786,13 @@ bool EnsembleMethod::solve(bool use_mda, vector<double> inflation_factors, vecto
                 ph.update(oe_one[0], pe_lams[recheck_idx], weights);
                 const double fom_phi =
                     ph.get_representative_phi(L2PhiHandler::phiType::COMPOSITE);
-                const double surr_phi = surrogate_phi[recheck_idx];
+                const double surr_phi = (have_full_phi
+                    && std::isfinite(last_surrogate_full_phi_[recheck_idx]))
+                    ? last_surrogate_full_phi_[recheck_idx]
+                    : std::numeric_limits<double>::quiet_NaN();
                 const double rel_diff = std::abs(fom_phi - surr_phi)
                     / std::max(std::abs(surr_phi), 1e-12);
+                dsi_recheck_idx = recheck_idx;
                 ss.str("");
                 ss << "[DSI-SURROGATE] recheck result: surrogate_phi="
                    << surr_phi << " fom_phi=" << fom_phi
@@ -7759,6 +7803,26 @@ bool EnsembleMethod::solve(bool use_mda, vector<double> inflation_factors, vecto
                 // the downstream inner phi-loop and acc_phi check use
                 // FOM truth at this candidate.
                 oe_lams[recheck_idx] = oe_one[0];
+
+                // The recheck FOM batch is also valid training data —
+                // FOM-evaluated obs at a known parameter set. Append
+                // it to the training store so the next iter's DSI fit
+                // benefits from it. Without this append the recheck
+                // rows are used only for the abandon check and then
+                // discarded, which leaves training-store growth
+                // dependent solely on the post-acceptance remainder
+                // sweep (line 7820).
+                if (dsi_training_store_)
+                {
+                    Eigen::MatrixXd recheck_rows = oe_one[0].get_eigen(
+                        std::vector<std::string>(), act_obs_names);
+                    dsi_training_store_->append(recheck_rows, act_obs_names);
+                    ss.str("");
+                    ss << "[DSI-SURROGATE] appended " << recheck_rows.rows()
+                       << " recheck rows to training store; size now "
+                       << dsi_training_store_->n_realisations();
+                    message(1, ss.str());
+                }
             } else {
                 ss.str("");
                 ss << "[DSI-SURROGATE] recheck-with-FOM: all reals failed "
@@ -7823,8 +7887,22 @@ bool EnsembleMethod::solve(bool use_mda, vector<double> inflation_factors, vecto
 		ph.report(echo);
 
         mean = ph.get_representative_phi(L2PhiHandler::phiType::COMPOSITE);
-
 		std = ph.get_std(L2PhiHandler::phiType::COMPOSITE);
+
+        // Surrogate-active candidates: rank by full-ensemble surrogate
+        // phi (Python `dsilam` parity). The subset-shaped oe_lams[i]
+        // gives a 10-real estimate of mean phi which has too much
+        // variance to pick reliably across wide candidate sets.
+        // Exception: dsi_recheck_idx (FOM-truth candidate from
+        // recheck-with-FOM) keeps its subset-FOM phi unchanged.
+        if (surrogate_active_this_iter_
+            && i != dsi_recheck_idx
+            && last_surrogate_full_phi_.size() == pe_lams.size()
+            && std::isfinite(last_surrogate_full_phi_[i]))
+        {
+            mean = last_surrogate_full_phi_[i];
+        }
+
         ph.write_lambda(iter,oe_lams[i].shape().first,last_best_lam,last_best_mean,
                         last_best_std,
                         scale_vals[i],lam_vals[i],mean,std);

@@ -107,15 +107,29 @@ double interp1d(double x,
 // transformers.py source.
 
 NormalScoreTransform::NormalScoreTransform(std::vector<int> cols_idx,
-                                           bool quadratic_extrapolation,
+                                           NSTailMode tail_mode,
                                            double tol,
                                            int max_samples,
                                            unsigned long seed)
     : DsiTransform(std::move(cols_idx)),
-      quadratic_extrapolation_(quadratic_extrapolation),
+      tail_mode_(tail_mode),
       tol_(tol),
       max_samples_(max_samples),
       rng_(seed) {}
+
+namespace {
+// Lagrange-quadratic interpolation through three points
+// (x0, y0), (x1, y1), (x2, y2). Caller must guarantee distinct x_i.
+inline double lagrange_quadratic(double x,
+                                 double x0, double y0,
+                                 double x1, double y1,
+                                 double x2, double y2) {
+    const double L0 = ((x - x1) * (x - x2)) / ((x0 - x1) * (x0 - x2));
+    const double L1 = ((x - x0) * (x - x2)) / ((x1 - x0) * (x1 - x2));
+    const double L2 = ((x - x0) * (x - x1)) / ((x2 - x0) * (x2 - x1));
+    return y0 * L0 + y1 * L1 + y2 * L2;
+}
+}  // namespace
 
 int NormalScoreTransform::active_col_count(int n_cols) const {
     return cols_idx_.empty() ? n_cols : static_cast<int>(cols_idx_.size());
@@ -280,13 +294,26 @@ Eigen::VectorXd NormalScoreTransform::sample_z_scores(int nreal) {
 void NormalScoreTransform::fit(const Eigen::MatrixXd& X) {
     const std::vector<int> cols = resolved_cols(static_cast<int>(X.cols()));
     state_.assign(cols.size(), ColState{});
+    // Mirror pyemu's `shared_z_scores` dict
+    // (transformers.py:467+, :480-481): the Monte-Carlo z-score
+    // generator is a function only of `n_train`, so all columns of
+    // the same length get the same z_scores. On large obs sets
+    // (e.g. ~21k Freyberg obs all sharing n_real_train) this turns
+    // the per-column O(20k) MC convergence loop into a single
+    // O(1) call. Without the cache, fit() time is unbounded for
+    // realistic ies obs sets.
+    std::unordered_map<int, Eigen::VectorXd> shared_z;
     for (std::size_t k = 0; k < cols.size(); ++k) {
         const int j = cols[k];
         Eigen::VectorXd vals = X.col(j);
         std::sort(vals.data(), vals.data() + vals.size());
         Eigen::VectorXd smoothed = moving_average_with_endpoints(vals);
-        Eigen::VectorXd zs = sample_z_scores(static_cast<int>(smoothed.size()));
-        state_[k].z_scores = std::move(zs);
+        const int n_pts = static_cast<int>(smoothed.size());
+        auto it = shared_z.find(n_pts);
+        if (it == shared_z.end()) {
+            it = shared_z.emplace(n_pts, sample_z_scores(n_pts)).first;
+        }
+        state_[k].z_scores = it->second;
         state_[k].originals = std::move(smoothed);
         state_[k].seeded = true;
     }
@@ -297,29 +324,55 @@ void NormalScoreTransform::apply_one(
     Eigen::MatrixXd& X, int j, const ColState& st) const {
     const Eigen::VectorXd& orig = st.originals;
     const Eigen::VectorXd& zs = st.z_scores;
+    const Eigen::Index n = zs.size();
     const double min_orig = orig(0);
-    const double max_orig = orig(orig.size() - 1);
+    const double max_orig = orig(n - 1);
     const double min_z = zs(0);
-    const double max_z = zs(zs.size() - 1);
+    const double max_z = zs(n - 1);
+    // Quad needs 3 distinct points; on tiny ensembles fall back to Linear.
+    const NSTailMode mode = (tail_mode_ == NSTailMode::Quad && n < 3)
+                                ? NSTailMode::Linear
+                                : tail_mode_;
     for (Eigen::Index r = 0; r < X.rows(); ++r) {
         const double v = X(r, j);
         if (v >= min_orig && v <= max_orig) {
             X(r, j) = interp1d(v, orig, zs);
         } else if (v < min_orig) {
-            if (quadratic_extrapolation_) {
-                const double slope = (zs(1) - zs(0)) / (orig(1) - orig(0));
-                X(r, j) = min_z + slope * (v - min_orig);
-            } else {
-                X(r, j) = min_z;
+            switch (mode) {
+                case NSTailMode::Clip:
+                    X(r, j) = min_z;
+                    break;
+                case NSTailMode::Linear: {
+                    const double slope = (zs(1) - zs(0)) / (orig(1) - orig(0));
+                    X(r, j) = min_z + slope * (v - min_orig);
+                    break;
+                }
+                case NSTailMode::Quad:
+                    X(r, j) = lagrange_quadratic(
+                        v,
+                        orig(0), zs(0),
+                        orig(1), zs(1),
+                        orig(2), zs(2));
+                    break;
             }
         } else { // v > max_orig
-            if (quadratic_extrapolation_) {
-                const Eigen::Index n = zs.size();
-                const double slope = (zs(n - 1) - zs(n - 2))
-                                     / (orig(n - 1) - orig(n - 2));
-                X(r, j) = max_z + slope * (v - max_orig);
-            } else {
-                X(r, j) = max_z;
+            switch (mode) {
+                case NSTailMode::Clip:
+                    X(r, j) = max_z;
+                    break;
+                case NSTailMode::Linear: {
+                    const double slope = (zs(n - 1) - zs(n - 2))
+                                         / (orig(n - 1) - orig(n - 2));
+                    X(r, j) = max_z + slope * (v - max_orig);
+                    break;
+                }
+                case NSTailMode::Quad:
+                    X(r, j) = lagrange_quadratic(
+                        v,
+                        orig(n - 3), zs(n - 3),
+                        orig(n - 2), zs(n - 2),
+                        orig(n - 1), zs(n - 1));
+                    break;
             }
         }
     }
@@ -329,31 +382,56 @@ void NormalScoreTransform::inverse_one(
     Eigen::MatrixXd& X, int j, const ColState& st) const {
     const Eigen::VectorXd& orig = st.originals;
     const Eigen::VectorXd& zs = st.z_scores;
+    const Eigen::Index n = zs.size();
     const double min_orig = orig(0);
-    const double max_orig = orig(orig.size() - 1);
+    const double max_orig = orig(n - 1);
     const double min_z = zs(0);
-    const double max_z = zs(zs.size() - 1);
+    const double max_z = zs(n - 1);
+    const NSTailMode mode = (tail_mode_ == NSTailMode::Quad && n < 3)
+                                ? NSTailMode::Linear
+                                : tail_mode_;
     for (Eigen::Index r = 0; r < X.rows(); ++r) {
         const double v = X(r, j);
         if (v >= min_z && v <= max_z) {
             X(r, j) = interp1d(v, zs, orig);
         } else if (v < min_z) {
-            if (quadratic_extrapolation_) {
-                const double slope = (orig(1) - orig(0)) / (zs(1) - zs(0));
-                const double intercept = orig(0) - slope * zs(0);
-                X(r, j) = slope * v + intercept;
-            } else {
-                X(r, j) = min_orig;
+            switch (mode) {
+                case NSTailMode::Clip:
+                    X(r, j) = min_orig;
+                    break;
+                case NSTailMode::Linear: {
+                    const double slope = (orig(1) - orig(0)) / (zs(1) - zs(0));
+                    const double intercept = orig(0) - slope * zs(0);
+                    X(r, j) = slope * v + intercept;
+                    break;
+                }
+                case NSTailMode::Quad:
+                    X(r, j) = lagrange_quadratic(
+                        v,
+                        zs(0), orig(0),
+                        zs(1), orig(1),
+                        zs(2), orig(2));
+                    break;
             }
         } else { // v > max_z
-            if (quadratic_extrapolation_) {
-                const Eigen::Index n = zs.size();
-                const double slope = (orig(n - 1) - orig(n - 2))
-                                     / (zs(n - 1) - zs(n - 2));
-                const double intercept = orig(n - 1) - slope * zs(n - 1);
-                X(r, j) = slope * v + intercept;
-            } else {
-                X(r, j) = max_orig;
+            switch (mode) {
+                case NSTailMode::Clip:
+                    X(r, j) = max_orig;
+                    break;
+                case NSTailMode::Linear: {
+                    const double slope = (orig(n - 1) - orig(n - 2))
+                                         / (zs(n - 1) - zs(n - 2));
+                    const double intercept = orig(n - 1) - slope * zs(n - 1);
+                    X(r, j) = slope * v + intercept;
+                    break;
+                }
+                case NSTailMode::Quad:
+                    X(r, j) = lagrange_quadratic(
+                        v,
+                        zs(n - 3), orig(n - 3),
+                        zs(n - 2), orig(n - 2),
+                        zs(n - 1), orig(n - 1));
+                    break;
             }
         }
     }

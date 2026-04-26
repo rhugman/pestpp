@@ -137,31 +137,47 @@ int main() {
         }
     }
 
-    // --- Quadratic-extrapolation flag (linear in both modes) --------
-    // Out-of-range values: with quad_extrap=true we get linear
-    // extrapolation; with false we get clamping to min/max z. Confirm
-    // the two paths produce different answers on out-of-range input.
+    // --- Tail-extrapolation modes: Clip / Linear / Quad --------------
+    // Three distinct out-of-range behaviors. Confirm they give different
+    // answers and that round-trip through the same mode preserves the
+    // out-of-range input for Linear and Quad (Clip clamps to the
+    // boundary so it cannot round-trip).
     {
         Eigen::VectorXd col = uniform(50, 5u);
         Eigen::MatrixXd X(col.size(), 1); X.col(0) = col;
 
-        NormalScoreTransform ns_clamp({}, /*quad_extrap=*/false, 1e-3, 2000);
-        NormalScoreTransform ns_extrap({}, /*quad_extrap=*/true, 1e-3, 2000);
-        ns_clamp.fit(X);
-        ns_extrap.fit(X);
+        NormalScoreTransform ns_clip   ({}, NSTailMode::Clip,   1e-3, 2000);
+        NormalScoreTransform ns_linear ({}, NSTailMode::Linear, 1e-3, 2000);
+        NormalScoreTransform ns_quad   ({}, NSTailMode::Quad,   1e-3, 2000);
+        ns_clip.fit(X);
+        ns_linear.fit(X);
+        ns_quad.fit(X);
 
-        // Pick a value clearly above the training max.
+        // Value clearly above the training max.
         Eigen::MatrixXd Y(1, 1); Y(0, 0) = col.maxCoeff() + 5.0;
-        Eigen::MatrixXd Yc = Y, Ye = Y;
-        ns_clamp.apply(Yc);
-        ns_extrap.apply(Ye);
-        DSI_EXPECT(std::abs(Ye(0, 0) - Yc(0, 0)) > 0.1);
+        Eigen::MatrixXd Yc = Y, Yl = Y, Yq = Y;
+        ns_clip.apply(Yc);
+        ns_linear.apply(Yl);
+        ns_quad.apply(Yq);
+        // All three should disagree on out-of-range input.
+        DSI_EXPECT(std::abs(Yl(0, 0) - Yc(0, 0)) > 0.1);
+        DSI_EXPECT(std::abs(Yq(0, 0) - Yc(0, 0)) > 0.1);
+        DSI_EXPECT(std::abs(Yq(0, 0) - Yl(0, 0)) > 1e-6);
 
-        // Round-trip in extrapolation mode preserves the out-of-range
-        // value (linear ramp + linear inverse).
-        Eigen::MatrixXd Yr = Ye;
-        ns_extrap.inverse(Yr);
-        DSI_EXPECT_NEAR(Yr(0, 0), Y(0, 0), 1e-10);
+        // Round-trip preserves the out-of-range value for Linear and
+        // Quad (the inverse undoes the same extrapolation rule).
+        Eigen::MatrixXd Yl_inv = Yl, Yq_inv = Yq;
+        ns_linear.inverse(Yl_inv);
+        ns_quad.inverse(Yq_inv);
+        DSI_EXPECT_NEAR(Yl_inv(0, 0), Y(0, 0), 1e-10);
+        DSI_EXPECT_NEAR(Yq_inv(0, 0), Y(0, 0), 1e-10);
+
+        // Clip cannot round-trip — the forward sends Y(0,0) to max_z,
+        // and the inverse sends it back to max_orig (= original max,
+        // not the input's max+5).
+        Eigen::MatrixXd Yc_inv = Yc;
+        ns_clip.inverse(Yc_inv);
+        DSI_EXPECT(std::abs(Yc_inv(0, 0) - Y(0, 0)) > 1.0);
     }
 
     return EXIT_SUCCESS;

@@ -2149,7 +2149,7 @@ void PestppOptions::set_defaults()
     set_ies_lambda_surrogate_method("dsi");
     set_ies_lambda_surrogate_load("");
     set_ies_lambda_surrogate_energy_threshold(0.99);
-    set_ies_lambda_surrogate_transforms("normal_score");
+    set_ies_lambda_surrogate_transforms("normal_score_linear");
     set_ies_lambda_surrogate_rowwise_groups_file("");
     set_ies_lambda_surrogate_recheck_with_fom(false);
     set_ies_lambda_surrogate_save_train(false);

@@ -43,14 +43,21 @@ void DsiEmulator::build_pipeline() {
                 pipeline_.push_back(std::unique_ptr<DsiTransform>(
                     new NormalScoreTransform(
                         std::move(cols_idx),
-                        /*quadratic_extrapolation=*/false,
+                        NSTailMode::Clip,
+                        cfg_.ns_tol, cfg_.ns_max_samples, cfg_.seed)));
+                break;
+            case TransformSpec::Kind::NormalScoreLinear:
+                pipeline_.push_back(std::unique_ptr<DsiTransform>(
+                    new NormalScoreTransform(
+                        std::move(cols_idx),
+                        NSTailMode::Linear,
                         cfg_.ns_tol, cfg_.ns_max_samples, cfg_.seed)));
                 break;
             case TransformSpec::Kind::NormalScoreQuad:
                 pipeline_.push_back(std::unique_ptr<DsiTransform>(
                     new NormalScoreTransform(
                         std::move(cols_idx),
-                        /*quadratic_extrapolation=*/true,
+                        NSTailMode::Quad,
                         cfg_.ns_tol, cfg_.ns_max_samples, cfg_.seed)));
                 break;
         }
