@@ -16,6 +16,11 @@
 	You should have received a copy of the GNU General Public License
 	along with PEST++.  If not, see<http://www.gnu.org/licenses/>.
 */
+/**
+ * @file Regularization.cpp
+ * @brief Implementation of Regularization.
+ */
+
 #include "Regularization.h"
 #include "ObjectiveFunc.h"
 #include "ModelRunPP.h"
@@ -32,17 +37,36 @@
 //{
 //}
 
+/**
+ * @brief Dynamic regularization.
+ *
+ * @param rhs Description.
+ *
+ * @return Description.
+ */
 DynamicRegularization::DynamicRegularization(const DynamicRegularization &rhs)
 	: use_dynamic_reg(rhs.use_dynamic_reg), adj_grp_weights(rhs.adj_grp_weights), phi_m_lim(rhs.phi_m_lim), phi_m_accept(rhs.phi_m_accept), frac_phi_m(rhs.frac_phi_m),
 	wf_min(rhs.wf_min), wf_max(rhs.wf_max), wffac(rhs.wffac), wftol(rhs.wftol), wf_init(rhs.wf_init),
 	tikhonov_weight(rhs.wf_init), max_reg_iter(rhs.max_reg_iter), regul_grp_weights(rhs.regul_grp_weights)
 {
 }
+/**
+ * @brief Get weight.
+ *
+ * @return Description.
+ */
 double DynamicRegularization::get_weight() const
 {
 	return tikhonov_weight;
 }
 
+/**
+ * @brief Get grp weight fact.
+ *
+ * @param grp_name Description.
+ *
+ * @return Description.
+ */
 double DynamicRegularization::get_grp_weight_fact(const std::string &grp_name) const
 {
 	double fact = 1.0;
@@ -54,6 +78,11 @@ double DynamicRegularization::get_grp_weight_fact(const std::string &grp_name) c
 	return fact;
 }
 
+/**
+ * @brief Get unit reg instance.
+ *
+ * @return Description.
+ */
 DynamicRegularization DynamicRegularization::get_unit_reg_instance()
 {
 	DynamicRegularization new_reg;
@@ -62,6 +91,11 @@ DynamicRegularization DynamicRegularization::get_unit_reg_instance()
 	return new_reg;
 }
 
+/**
+ * @brief Get zero reg instance.
+ *
+ * @return Description.
+ */
 DynamicRegularization DynamicRegularization::get_zero_reg_instance()
 {
 	DynamicRegularization new_reg;
@@ -83,6 +117,14 @@ DynamicRegularization DynamicRegularization::get_zero_reg_instance()
 	return new_reg;
 }
 
+/**
+ * @brief Assign value by key.
+ *
+ * @param key Description.
+ * @param org_value Description.
+ *
+ * @return Description.
+ */
 PestppOptions::ARG_STATUS DynamicRegularization::assign_value_by_key(const std::string key, const std::string org_value)
 {
 	/*DynamicRegularization(bool _use_dynamic_reg = false, bool _grp_weight_adj = false, double _phi_m_lim = 0,
@@ -128,6 +170,9 @@ PestppOptions::ARG_STATUS DynamicRegularization::assign_value_by_key(const std::
 	return PestppOptions::ARG_STATUS::ARG_ACCEPTED;
 }
 
+/**
+ * @brief Set defaults.
+ */
 void DynamicRegularization::set_defaults()
 {
 	/*DynamicRegularization(bool _use_dynamic_reg = false, bool _grp_weight_adj = false, double _phi_m_lim = 0,
@@ -140,13 +185,16 @@ void DynamicRegularization::set_defaults()
 	frac_phi_m = 1;
 	wf_min = 1e-10;
 	wf_max = 1e+10;
-	wffac = 0;
-	wftol = 1000;
+	wffac = 1.3;
+	wftol = 0.01;
 	wf_init = 1.0;
 	tikhonov_weight = 1.0;
-	max_reg_iter = 20;
+	max_reg_iter = 5;
 }
 
+/**
+ * @brief Set zero.
+ */
 void DynamicRegularization::set_zero()
 {
 	use_dynamic_reg = true;

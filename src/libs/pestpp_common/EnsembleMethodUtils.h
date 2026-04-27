@@ -59,7 +59,7 @@ protected:
 class PhiThread
 {
 public:
-    PhiThread(vector<string> _oe_real_names);
+    explicit PhiThread(vector<string> _oe_real_names);
 
     void work(int thread_id, Eigen::MatrixXd& weights, Eigen::MatrixXd& resid, vector<string>& oe_real_names, map<string,map<string,double>>& phi_map);
 
@@ -232,7 +232,8 @@ public:
 	EnsembleSolver(PerformanceLog* _performance_log, FileManager& _file_manager, Pest& _pest_scenario, ParameterEnsemble& _pe,
 		ObservationEnsemble& _oe, ObservationEnsemble& _base_oe, ObservationEnsemble& _weights, Localizer& _localizer,
 		Covariance& _parcov,Eigen::MatrixXd& _Am, L2PhiHandler& _ph,
-		bool _use_localizer, int _iter, vector<string>& _act_par_names, vector<string> &_act_obs_names);
+		bool _use_localizer, int _iter, vector<string>& _act_par_names, vector<string> &_act_obs_names,
+		double _reg_factor);
 
 	void solve(int num_threads, double cur_lam, bool use_glm_form, ParameterEnsemble& pe_upgrade, unordered_map<string, pair<vector<string>, vector<string>>>& loc_map);
     void solve_multimodal(int num_threads, double cur_lam, bool use_glm_form, ParameterEnsemble& pe_upgrade, unordered_map<string,pair<vector<string>, vector<string>>>& loc_map, double mm_alpha);
@@ -252,6 +253,7 @@ private:
 	FileManager& file_manager;
 	int iter, verbose_level;
 	bool use_localizer;
+	double reg_factor;
 	Pest& pest_scenario;
 	ParameterEnsemble& pe;
 	ObservationEnsemble& oe, base_oe, weights;
@@ -295,7 +297,7 @@ public:
                   unordered_map<string, Eigen::VectorXd>& _obs_resid_map, unordered_map<string, Eigen::VectorXd>& _obs_diff_map,
                   unordered_map<string, Eigen::VectorXd>& _obs_err_map,
                   unordered_map<string, Eigen::VectorXd>& _weight_map, ParameterEnsemble& _pe_upgrade,
-                  unordered_map<string, pair<vector<string>, vector<string>>>& _cases);
+                  unordered_map<string, pair<vector<string>, vector<string>>>& _cases, double _reg_factor);
 
     void work(int thread_id, int iter, double cur_lam, bool use_glm_form, Eigen::VectorXd parcov_inv_vec, Eigen::MatrixXd Am);
 
@@ -303,14 +305,14 @@ protected:
     PerformanceLog* performance_log;
     vector<string> keys;
     int count, total;
-
+	double reg_factor;
     unordered_map<string, pair<vector<string>, vector<string>>>& cases;
 
     ParameterEnsemble& pe_upgrade;
     unordered_map<string, Eigen::VectorXd>& weight_map;
 
     unordered_map<string, Eigen::VectorXd>& par_resid_map, & par_diff_map;
-    unordered_map<string, Eigen::VectorXd>& obs_resid_map, & obs_diff_map, obs_err_map;
+    unordered_map<string, Eigen::VectorXd>& obs_resid_map, & obs_diff_map, & obs_err_map;
 
     mutex ctrl_lock, weight_lock, loc_lock, parcov_lock;
     mutex obs_resid_lock, obs_diff_lock, par_resid_lock;
@@ -327,7 +329,7 @@ public:
 		Localizer& _localizer, unordered_map<string, double>& _parcov_inv_map,
 		unordered_map<string, double>& _weight_map, ParameterEnsemble& _pe_upgrade,
 		unordered_map<string, pair<vector<string>, vector<string>>>& _cases,
-		unordered_map<string, Eigen::VectorXd>& _Am_map, Localizer::How& _how);
+		unordered_map<string, Eigen::VectorXd>& _Am_map, Localizer::How& _how, double _reg_factor);
 
 	virtual void work(int thread_id, int iter, double cur_lam, bool use_glm_form, vector<string> par_names, vector<string> obs_names) { ; }
 
@@ -338,14 +340,14 @@ public:
                            const Eigen::MatrixXd& Am, Eigen::MatrixXd& obs_resid,Eigen::MatrixXd& obs_diff, Eigen::MatrixXd& upgrade_1,
                            Eigen::MatrixXd& obs_err, const Eigen::DiagonalMatrix<double, Eigen::Dynamic>& weights,
                            const Eigen::DiagonalMatrix<double, Eigen::Dynamic>& parcov_inv,
-                           const vector<string>& act_obs_names,const vector<string>& act_par_names,
+                           const vector<string>& act_obs_names,const vector<string>& act_par_names, double _reg_factor,
                            Eigen::MatrixXd* obs_delta_linearised_out = nullptr);
 protected:
 	PerformanceLog* performance_log;
 	Localizer::How how;
 	vector<string> keys;
 	int count, total;
-
+	double reg_factor;
 	unordered_map<string, pair<vector<string>, vector<string>>>& cases;
 
 	ParameterEnsemble& pe_upgrade;
@@ -354,7 +356,7 @@ protected:
 	unordered_map<string, double>& weight_map;
 
 	unordered_map<string, Eigen::VectorXd>& par_resid_map, & par_diff_map, & Am_map;
-	unordered_map<string, Eigen::VectorXd>& obs_resid_map, & obs_diff_map, obs_err_map;
+	unordered_map<string, Eigen::VectorXd>& obs_resid_map, & obs_diff_map, &obs_err_map;
 
 	mutex ctrl_lock, weight_lock, loc_lock, parcov_lock;
 	mutex obs_resid_lock, obs_diff_lock, par_resid_lock;
@@ -395,7 +397,7 @@ public:
 	void message(int level, const string& _message);
 	//template<typename T>
 	//void message(int level, const string& _message, T extra);
-	void message(int level, const string& _message, string extra);
+	void message(int level, const string& _message, string extra, bool echo = true);
 	void message(int level, const string& _message, int extra);
 	void message(int level, const string& _message, double extra);
 	void message(int level, const string& _message, size_t extra);
@@ -494,21 +496,19 @@ protected:
     // Read by the abandon-branch warning so we don't blame the
     // surrogate for FOM-fallback abandons.
     bool surrogate_active_this_iter_ = false;
-    // Per-(λ, scale) relative disagreement |linear_phi - dsi_phi| /
-    // max(|linear_phi|, eps), populated only when surrogate method is
-    // "both". Used by the disagreement-driven recheck_with_fom path
-    // to choose which candidate to FOM-validate.
+    // Per-(lambda, scale) relative disagreement
+    // |linear_phi - dsi_phi| / max(|linear_phi|, eps), populated only
+    // when surrogate method is "both". Used by the disagreement-driven
+    // recheck_with_fom path to choose which candidate to FOM-validate.
     std::vector<double> last_surrogate_disagreement_;
-    // Per-(λ, scale) mean phi computed from the FULL-ensemble surrogate
-    // prediction (vs the subset-only oe_lams[i] handed to the inner
-    // phi loop). Used to rank candidates by a stable full-ensemble
-    // signal — Python `dsilam` parity. With wide candidate sets the
-    // 10-real subset prediction's mean phi has too much variance to
-    // pick reliably; the full-ensemble surrogate prediction is
-    // essentially free (one extra matmul per candidate) and matches
-    // what the Python prototype does at lambda_search.py:148-159.
+    // Per-(lambda, scale) mean phi computed from the FULL-ensemble
+    // surrogate prediction (vs the subset-only oe_lams[i] handed to
+    // the inner phi loop). Used to rank candidates by a stable
+    // full-ensemble signal: with wide candidate sets the 10-real
+    // subset prediction's mean phi has too much variance to pick
+    // reliably; the full-ensemble surrogate prediction is essentially
+    // free (one extra matmul per candidate).
     std::vector<double> last_surrogate_full_phi_;
-
 
 	bool solve_glm(int cycle = NetPackage::NULL_DA_CYCLE);
 
@@ -520,15 +520,15 @@ protected:
 
 	vector<ObservationEnsemble> run_lambda_ensembles(vector<ParameterEnsemble>& pe_lams, vector<double>& lam_vals, vector<double>& scale_vals, int cycle, vector<int>& pe_subset_idxs, vector<int>& oe_subset_idxs);
 
-	// DSI lambda surrogate (plan §7.3): instead of running FOM on every
-	// (lam, scale) candidate, build the per-candidate observation
-	// ensemble from a free linearised tangent + (optionally) a DSI
-	// predict/project refinement. `method` selects the prediction
-	// path: "dsi" runs the linear tangent then refines through DSI
-	// (default), "linear" returns the bare linear tangent (exact for
-	// linear forward models, no DSI fit needed), "both" runs both
-	// paths and logs the per-(λ, scale) phi disagreement before
-	// returning the DSI prediction as canonical.
+	// DSI lambda surrogate: instead of running FOM on every (lam, scale)
+	// candidate, build the per-candidate observation ensemble from a
+	// free linearised tangent + (optionally) a DSI predict/project
+	// refinement. `method` selects the prediction path: "dsi" runs
+	// the linear tangent then refines through DSI (default), "linear"
+	// returns the bare linear tangent (exact for linear forward models,
+	// no DSI fit needed), "both" runs both paths and logs the
+	// per-(lambda, scale) phi disagreement before returning the DSI
+	// prediction as canonical.
 	// `obs_delta_by_cur_lam` is keyed by the inflation-factor value
 	// the lambda-loop used (= lam_vals[i] for the matching pe_lam);
 	// each value is the (n_act_obs x n_real_full) capture from the
@@ -580,7 +580,6 @@ protected:
 
     double get_lambda();
 
-    void reset_par_ensemble_to_prior_mean(double reinflate_factor);
-
+    void reinflate_par_ensemble(double reinflate_factor,int reinflate_num_reals);
 };
 #endif

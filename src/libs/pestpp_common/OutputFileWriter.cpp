@@ -16,6 +16,11 @@
 	You should have received a copy of the GNU General Public License
 	along with PEST++.  If not, see<http://www.gnu.org/licenses/>.
 */
+/**
+ * @file OutputFileWriter.cpp
+ * @brief Implementation of OutputFileWriter.
+ */
+
 
 #include <fstream>
 #include <iostream>
@@ -37,6 +42,17 @@ using namespace Eigen;
 using namespace::pest_utils;
 
 
+/**
+ * @brief Output file writer.
+ *
+ * @param _file_manager Description.
+ * @param _pest_scenario Description.
+ * @param restart_flag Description.
+ * @param _save_rei Description.
+ * @param _eigenwrite Description.
+ *
+ * @return Description.
+ */
 OutputFileWriter::OutputFileWriter(FileManager &_file_manager, Pest &_pest_scenario, bool restart_flag, bool _save_rei, int _eigenwrite)
 	: file_manager(_file_manager), pest_scenario(_pest_scenario),case_name(_file_manager.get_base_filename()), save_rei(_save_rei), eigenwrite(_eigenwrite)
 {
@@ -44,6 +60,11 @@ OutputFileWriter::OutputFileWriter(FileManager &_file_manager, Pest &_pest_scena
 }
 
 
+/**
+ * @brief Prep glm files.
+ *
+ * @param restart_flag Description.
+ */
 void OutputFileWriter::prep_glm_files(bool restart_flag)
 {
 	if (restart_flag)
@@ -66,6 +87,15 @@ void OutputFileWriter::prep_glm_files(bool restart_flag)
 	}
 }
 
+/**
+ * @brief Iteration report.
+ *
+ * @param os Description.
+ * @param iter Description.
+ * @param nruns Description.
+ * @param iteration_type Description.
+ * @param svd_type Description.
+ */
 void OutputFileWriter::iteration_report(std::ostream &os, int iter, int nruns, string iteration_type, string svd_type)
 {
 	os << "OPTIMISATION ITERATION NUMBER: " << iter << endl << endl;
@@ -90,6 +120,12 @@ void OutputFileWriter::iteration_report(std::ostream &os, int iter, int nruns, s
 //	os << endl;
 //}
 
+/**
+ * @brief Write jco run id.
+ *
+ * @param group_id Description.
+ * @param par_run_map Description.
+ */
 void OutputFileWriter::write_jco_run_id(int group_id, std::map<string, vector<int>> &par_run_map)
 {
 	if (!pest_scenario.get_pestpp_options().get_iter_summary_flag())
@@ -110,6 +146,9 @@ void OutputFileWriter::write_jco_run_id(int group_id, std::map<string, vector<in
 	//file_manager.close_file("rid");
 }
 
+/**
+ * @brief Prepare upgrade summary files.
+ */
 void OutputFileWriter::prepare_upgrade_summary_files()
 {
 	file_manager.open_ofile_ext("upg.csv");
@@ -122,6 +161,15 @@ void OutputFileWriter::prepare_upgrade_summary_files()
 	os_up << endl;
 }
 
+/**
+ * @brief Write upgrade.
+ *
+ * @param iteration Description.
+ * @param is_super Description.
+ * @param lambda Description.
+ * @param scale_factor Description.
+ * @param pars Description.
+ */
 void OutputFileWriter::write_upgrade(int iteration, int is_super, double lambda, double scale_factor, Parameters &pars)
 {
 	ofstream &os_up = file_manager.get_ofstream("upg.csv");
@@ -143,6 +191,11 @@ void OutputFileWriter::write_upgrade(int iteration, int is_super, double lambda,
 
 }
 
+/**
+ * @brief Prepare iteration summary files.
+ *
+ * @param restart_flag Description.
+ */
 void OutputFileWriter::prepare_iteration_summary_files(bool restart_flag)
 {
 	if (restart_flag)
@@ -177,6 +230,12 @@ void OutputFileWriter::prepare_iteration_summary_files(bool restart_flag)
 	}
 }
 
+/**
+ * @brief Write sen iter.
+ *
+ * @param iter Description.
+ * @param ctl_par_sens Description.
+ */
 void OutputFileWriter::write_sen_iter(int iter, map<string, double> &ctl_par_sens)
 {
 	if (!pest_scenario.get_pestpp_options().get_iter_summary_flag())
@@ -195,6 +254,12 @@ void OutputFileWriter::write_sen_iter(int iter, map<string, double> &ctl_par_sen
 	os << endl;
 }
 
+/**
+ * @brief Write par iter.
+ *
+ * @param iter Description.
+ * @param ctl_pars Description.
+ */
 void OutputFileWriter::write_par_iter(int iter, Parameters const &ctl_pars)
 {
 	if (!pest_scenario.get_pestpp_options().get_iter_summary_flag())
@@ -208,6 +273,13 @@ void OutputFileWriter::write_par_iter(int iter, Parameters const &ctl_pars)
 	os << endl;
 }
 
+/**
+ * @brief Write obj iter.
+ *
+ * @param iter Description.
+ * @param nruns Description.
+ * @param phi_data Description.
+ */
 void OutputFileWriter::write_obj_iter(int iter, int nruns, PhiData const &phi_data)
 {
 	if (!pest_scenario.get_pestpp_options().get_iter_summary_flag())
@@ -224,6 +296,12 @@ void OutputFileWriter::write_obj_iter(int iter, int nruns, PhiData const &phi_da
 	os << endl;
 }
 
+/**
+ * @brief Scenario report.
+ *
+ * @param os Description.
+ * @param report_mode Description.
+ */
 void OutputFileWriter::scenario_report(std::ostream &os, bool report_mode)
 {
 	string mode;// = "estimation";
@@ -316,8 +394,18 @@ void OutputFileWriter::scenario_report(std::ostream &os, bool report_mode)
 	os << endl;
 
 }
+/**
+ * @brief Set pest scenario.
+ *
+ * @param _pest_scenario Description.
+ */
 void OutputFileWriter::set_pest_scenario(Pest& _pest_scenario) { pest_scenario = _pest_scenario; }
 
+/**
+ * @brief Scenario io report.
+ *
+ * @param os Description.
+ */
 void OutputFileWriter::scenario_io_report(std::ostream &os)
 {
 
@@ -352,6 +440,11 @@ void OutputFileWriter::scenario_io_report(std::ostream &os)
 	os << endl << endl;
 }
 
+/**
+ * @brief Scenario pargroup report.
+ *
+ * @param os Description.
+ */
 void OutputFileWriter::scenario_pargroup_report(std::ostream &os)
 {
 	ParameterGroupRec grp_rec;
@@ -371,6 +464,11 @@ void OutputFileWriter::scenario_pargroup_report(std::ostream &os)
 	os << endl << endl;
 }
 
+/**
+ * @brief Scenario par report.
+ *
+ * @param os Description.
+ */
 void OutputFileWriter::scenario_par_report(std::ostream &os)
 {
 	if (pest_scenario.get_ctl_ordered_par_names().size() > 100000)
@@ -415,6 +513,12 @@ void OutputFileWriter::scenario_par_report(std::ostream &os)
 	os << endl << endl;
 }
 
+/**
+ * @brief Scenario obs csv.
+ *
+ * @param os Description.
+ * @param alt_weights Description.
+ */
 void OutputFileWriter::scenario_obs_csv(ostream& os, map<string,double> alt_weights)
 {
 	if (os.bad())
@@ -435,6 +539,11 @@ void OutputFileWriter::scenario_obs_csv(ostream& os, map<string,double> alt_weig
 	}
 }
 
+/**
+ * @brief Scenario obs report.
+ *
+ * @param os Description.
+ */
 void OutputFileWriter::scenario_obs_report(std::ostream &os)
 {
 	if (pest_scenario.get_ctl_ordered_obs_names().size() > 100000)
@@ -466,6 +575,11 @@ void OutputFileWriter::scenario_obs_report(std::ostream &os)
 }
 
 
+/**
+ * @brief Scenario pi report.
+ *
+ * @param os Description.
+ */
 void OutputFileWriter::scenario_pi_report(std::ostream &os)
 {
 	const PriorInformation &pi = pest_scenario.get_prior_info();
@@ -482,6 +596,12 @@ void OutputFileWriter::scenario_pi_report(std::ostream &os)
 }
 
 
+/**
+ * @brief Par report.
+ *
+ * @param os Description.
+ * @param new_ctl_pars Description.
+ */
 void OutputFileWriter::par_report(std::ostream &os, Parameters const &new_ctl_pars)
 {
 	double val;
@@ -513,20 +633,30 @@ void OutputFileWriter::par_report(std::ostream &os, int const iter, Parameters c
 	string max_rel_par = "N/A";
 
 	os << "    Iteration "<<iter<<" Parameter Upgrades (" << par_type << " Parameters) " << endl;
-	os << "      Parameter     Current       Previous       Factor       Relative" << endl;
-	os << "        Name         Value         Value         Change        Change" << endl;
-	os << "      ----------  ------------  ------------  ------------  ------------" << endl;
+//	os << "      Parameter     Current       Previous       Factor       Relative" << endl;
+//	os << "        Name         Value         Value         Change        Change" << endl;
+//	os << "      ----------  ------------  ------------  ------------  ------------" << endl;
 	vector<string> par_names;
 	if (lower_cp(par_type) == "control file")
-		par_names = pest_scenario.get_ctl_ordered_par_names();
+		par_names = pest_scenario.get_ctl_ordered_adj_par_names();
 	else
 	{
 		par_names = new_pars.get_keys();
 		sort(par_names.begin(), par_names.end());
 	}
+    const ParameterInfo* pinfo = pest_scenario.get_ctl_parameter_info_ptr_4_mod();
+
 	//for (const auto &ipar : new_ctl_pars)
-	for (auto &p_name : par_names)
-	{
+    int name_len = 20;
+	for (auto &p_name : par_names) {
+
+        name_len = max((int) p_name.size(), name_len);
+    }
+
+    os << setw(name_len) << left << "name" << setw(19) << right << " current value" << setw(19) << " previous value";
+    os << setw(19) << " factor change" << setw(19) << " relative change" << endl;
+    for (auto &p_name : par_names) {
+
 		Parameters::const_iterator pi = new_pars.find(p_name);
 		if (pi == new_pars.end()) continue;
 		p_new = new_pars.get_rec(p_name);
@@ -542,19 +672,18 @@ void OutputFileWriter::par_report(std::ostream &os, int const iter, Parameters c
 			max_rel_change = rel_change;
 			max_rel_par = p_name;
 		}
-		os << right;
-		os << "    " << setw(12) << lower_cp(p_name);
-		os << right;
-		os << "  " << setw(12) << p_new;
-		os << "  " << setw(12) << p_old;
-		if (have_fac)
-			os << "  " << setw(12) << fac_change;
+		os << setw(name_len) << left << p_name;
+        os << " " << setw(19) << right << p_new;
+        os << " " << setw(19) << right << p_old;
+
+        if (have_fac)
+			os << " " << setw(19) << right << fac_change;
 		else
-			os << "  " << setw(12) << "N/A";
+			os << " " << setw(19) << right << "N/A";
 		if (have_rel)
-			os << "  " << setw(12) << rel_change;
+			os << " " << setw(19) << right << rel_change;
 		else
-			os << "  " << setw(12) << "N/A";
+			os << " " << setw(19) << right << "N/A";
 		os << endl;
 	}
 	os << "       Maximum changes in \"" << par_type << "\" parameters:" << endl;
@@ -596,6 +725,17 @@ void OutputFileWriter::param_change_stats(double p_old, double p_new, bool &have
 
 
 
+/**
+ * @brief Phi report.
+ *
+ * @param os Description.
+ * @param iter Description.
+ * @param nruns Description.
+ * @param phi_comps Description.
+ * @param dynamic_reg_weight Description.
+ * @param final Description.
+ * @param tag Description.
+ */
 void OutputFileWriter::phi_report(std::ostream &os, int const iter, int const nruns, PhiData const &phi_comps, double const dynamic_reg_weight,bool final,string tag)
 {
 	map<string, double>::const_iterator it = phi_comps.group_phi.find("REGUL");
@@ -641,6 +781,15 @@ void OutputFileWriter::phi_report(std::ostream &os, int const iter, int const nr
 }
 
 
+/**
+ * @brief Obs report.
+ *
+ * @param os Description.
+ * @param obs Description.
+ * @param sim Description.
+ * @param oi Description.
+ * @param alt_weights Description.
+ */
 void OutputFileWriter::obs_report(ostream &os, const Observations &obs, const Observations &sim, ObservationInfo &oi, map<string,double> alt_weights)
 {
 	vector<string> obs_name_vec = pest_scenario.get_ctl_ordered_obs_names();
@@ -700,6 +849,15 @@ void OutputFileWriter::obs_report(ostream &os, const Observations &obs, const Ob
 }
 
 
+/**
+ * @brief Write opt constraint rei.
+ *
+ * @param fout Description.
+ * @param iter_no Description.
+ * @param pars Description.
+ * @param obs Description.
+ * @param sim Description.
+ */
 void OutputFileWriter::write_opt_constraint_rei(std::ofstream &fout, int iter_no, const Parameters pars, const Observations &obs, const Observations &sim)
 {
 	fout << setiosflags(ios::left);
@@ -778,6 +936,14 @@ void OutputFileWriter::write_rei(ofstream &fout, int iter_no, const Observations
 
 
 
+/**
+ * @brief Write par.
+ *
+ * @param fout Description.
+ * @param pars Description.
+ * @param offset_tran Description.
+ * @param scale_tran Description.
+ */
 void OutputFileWriter::write_par(ofstream &fout, const Parameters &pars, const TranOffset &offset_tran, const TranScale &scale_tran)
 {
 	Parameters::const_iterator it;
@@ -810,6 +976,12 @@ void OutputFileWriter::write_par(ofstream &fout, const Parameters &pars, const T
 	fout.flush();
 }
 
+/**
+ * @brief Write sen header.
+ *
+ * @param fout Description.
+ * @param case_name Description.
+ */
 void OutputFileWriter::write_sen_header(std::ostream &fout, const string &case_name)
 {
 	fout << "                    PARAMETER SENSITIVITIES: CASE " << case_name << endl;
@@ -817,6 +989,11 @@ void OutputFileWriter::write_sen_header(std::ostream &fout, const string &case_n
 }
 
 
+/**
+ * @brief Write restart header.
+ *
+ * @param fout Description.
+ */
 void OutputFileWriter::write_restart_header(std::ostream &fout)
 {
 	fout << endl << endl;
@@ -937,12 +1114,26 @@ void OutputFileWriter::append_sen(std::ostream &fout, int iter_no, const Jacobia
 }
 
 
+/**
+ * @brief Set svd output opt.
+ *
+ * @param _eigenwrite Description.
+ */
 void OutputFileWriter::set_svd_output_opt(int _eigenwrite)
 {
 	eigenwrite = _eigenwrite;
 }
 
 
+/**
+ * @brief Write svd.
+ *
+ * @param Sigma Description.
+ * @param Vt Description.
+ * @param lambda Description.
+ * @param freeze_numeric_pars Description.
+ * @param Sigma_trunc Description.
+ */
 void OutputFileWriter::write_svd(VectorXd &Sigma, Eigen::SparseMatrix<double> &Vt, double lambda, const Parameters &freeze_numeric_pars, VectorXd &Sigma_trunc)
 {
 		ofstream &fout_svd = file_manager.get_ofstream("svd");
@@ -964,6 +1155,11 @@ void OutputFileWriter::write_svd(VectorXd &Sigma, Eigen::SparseMatrix<double> &V
 }
 
 
+/**
+ * @brief Write svd iteration.
+ *
+ * @param iteration_no Description.
+ */
 void OutputFileWriter::write_svd_iteration(int iteration_no)
 {
 		ofstream &fout_svd = file_manager.get_ofstream("svd");
@@ -972,6 +1168,13 @@ void OutputFileWriter::write_svd_iteration(int iteration_no)
 		fout_svd << "OPTIMISATION ITERATION NO.        : " << iteration_no << endl << endl;
 }
 
+/**
+ * @brief Write jco.
+ *
+ * @param isBaseIter Description.
+ * @param ext Description.
+ * @param jco Description.
+ */
 void OutputFileWriter::write_jco(bool isBaseIter, string ext, Jacobian &jco)
 {
 

@@ -375,14 +375,63 @@ public:
 	void set_sqp_dv_en(string _file) { sqp_dv_en = _file; }
 	string get_sqp_obs_restart_en()const { return sqp_obs_restart_en; }
 	void set_sqp_obs_restart_en(string _file) { sqp_obs_restart_en = _file; }
+	string get_sqp_search_method()const { return sqp_search_method; }
+	void set_sqp_search_method(string _how) { sqp_search_method = _how; }
 	int get_sqp_num_reals()const { return sqp_num_reals; }
 	void set_sqp_num_reals(int _num_reals) { sqp_num_reals = _num_reals; }
+	int get_sqp_subset_size()const { return sqp_subset_size; }
+	void set_sqp_subset_size(int _num_reals) { sqp_subset_size = _num_reals; }
 	bool get_sqp_update_hessian()const { return sqp_update_hessian; }
 	void set_sqp_update_hessian(bool _flag) { sqp_update_hessian = _flag; }
-	vector<double> get_sqp_scale_facs() const { return sqp_scale_facs; }  // perhaps change arg name to sqp_alpha_mults
-	void set_sqp_scale_facs(vector<double> _mults) { sqp_scale_facs = _mults; }
-
-
+	string get_sqp_hessian_update_method()const { return sqp_hessian_update_method; }
+	void set_sqp_hessian_update_method(string _how) { sqp_hessian_update_method = _how; }
+	bool get_sqp_solve_partial_step()const { return sqp_solve_partial_step; }
+	void set_sqp_solve_partial_step(bool _flag) { sqp_solve_partial_step = _flag; }
+	vector<double> get_sqp_alpha_mults() const { return sqp_alpha_mults; } 
+	void set_sqp_alpha_mults(vector<double> _mults) { sqp_alpha_mults = _mults; }
+	double get_sqp_filter_tol() const { return sqp_filter_tol; }
+	void set_sqp_filter_tol(double val) { sqp_filter_tol = val; }
+	double get_sqp_working_set_tol() const { return sqp_working_set_tol; }
+	void set_sqp_working_set_tol(double val) { sqp_working_set_tol = val; }
+	double get_sqp_cma_c1() const { return sqp_cma_c1; }
+	void set_sqp_cma_c1(double val) { sqp_cma_c1 = val; }
+	double get_sqp_cma_cmu() const { return sqp_cma_cmu; }
+	void set_sqp_cma_cmu(double val) { sqp_cma_cmu = val; }
+	double get_sqp_cma_cc() const { return sqp_cma_cc; }
+	void set_sqp_cma_cc(double val) { sqp_cma_cc = val; }
+	bool get_sqp_cma_stepsize_control()const { return sqp_cma_stepsize_control; }
+	void set_sqp_cma_stepsize_control(bool _flag) { sqp_cma_stepsize_control = _flag; }
+	double get_sqp_cma_reinflation_factor() const { return sqp_cma_reinflation_factor; }
+	void set_sqp_cma_reinflation_factor(double val) { sqp_cma_reinflation_factor = val; }
+	int get_sqp_max_consec_infeas_ies()const { return sqp_max_consec_infeas_ies; }
+	void set_sqp_max_consec_infeas_ies(int _max) { sqp_max_consec_infeas_ies = _max; }
+	double get_sqp_max_reinflation_cond_num() const { return sqp_max_reinflation_cond_num; }
+	void set_sqp_max_reinflation_cond_num(double val) { sqp_max_reinflation_cond_num = val; }
+	double get_sqp_scale_up_factor() const { return sqp_scale_up_factor; }
+	void set_sqp_scale_up_factor(double val) { sqp_scale_up_factor = val; }
+	double get_sqp_scale_down_factor() const { return sqp_scale_down_factor; }
+	void set_sqp_scale_down_factor(double val) { sqp_scale_down_factor = val; }
+	double get_sqp_hess_max_cond_num() const { return sqp_hess_max_cond_num; }
+	void set_sqp_hess_max_cond_num(double val) { sqp_hess_max_cond_num = val; }
+	int get_sqp_save_cov_every()const { return sqp_save_cov_every; }
+	void set_sqp_save_cov_every(int _every) { sqp_save_cov_every = _every; }
+	bool get_sqp_enforce_bounds()const { return sqp_enforce_bounds; }
+	void set_sqp_enforce_bounds(bool _flag) { sqp_enforce_bounds = _flag; }
+	void set_sqp_viol_pad(double val) { sqp_viol_pad = val; }
+	double get_sqp_viol_pad() const { return sqp_viol_pad; }
+	int get_sqp_reset_hessian_every()const { return sqp_reset_hessian_every; }
+	void set_sqp_reset_hessian_every(int _every) { sqp_reset_hessian_every = _every; }
+	int get_sqp_wset_level()const { return sqp_wset_level; }
+	void set_sqp_wset_level(int _level) { sqp_wset_level = _level; }
+	bool get_sqp_rescale_search_dir()const { return sqp_rescale_search_dir; }
+	void set_sqp_rescale_search_dir(bool _flag) { sqp_rescale_search_dir = _flag; }
+	int get_sqp_seek_feas_max_iter()const { return sqp_seek_feas_max_iter; }
+	void set_sqp_seek_feas_max_iter(int _nmax) { sqp_seek_feas_max_iter = _nmax; }
+	int get_sqp_cma_parent_num()const { return sqp_cma_parent_num; }
+	void set_sqp_cma_parent_num(int _num) { sqp_cma_parent_num = _num; }
+	double get_sqp_risk() const { return sqp_risk; }
+	void set_sqp_risk(double val) { sqp_risk = val; }
+	
 	string get_mou_generator() const { return mou_generator; }
 	void set_mou_generator(string name) { mou_generator = name; }
 	int get_mou_population_size() const { return mou_population_size; }
@@ -413,10 +462,40 @@ public:
 	void set_mou_save_population_every(int every) { mou_save_population_every = every; }
 	double get_mou_pso_omega() const { return mou_pso_omega; }
 	void set_mou_pso_omega(double val) { mou_pso_omega = val; }
-	double get_mou_pso_social_const() const { return mou_pso_social_const; }
-	void set_mou_pso_social_const(double val) { mou_pso_social_const = val; }
-	double get_mou_pso_cognitive_const() const { return mou_pso_cognitive_const; }
-	void set_mou_pso_cognitive_const(double val) { mou_pso_cognitive_const = val; }
+	vector<double> get_mou_pso_social_const() const { return mou_pso_social_const; }
+	void set_mou_pso_social_const(vector<double> _vals) { mou_pso_social_const = _vals; }
+	vector<double> get_mou_pso_cognitive_const() const { return mou_pso_cognitive_const; }
+	void set_mou_pso_cognitive_const(vector<double> _vals) { mou_pso_cognitive_const = _vals; }
+	double get_mou_pso_alpha() const { return mou_pso_alpha; }
+	void set_mou_pso_alpha(double val) { mou_pso_alpha = val; }
+	double get_mou_pso_rramp() const { return mou_pso_rramp; }
+	void set_mou_pso_rramp(double val) { mou_pso_rramp = val; }
+	double get_mou_pso_rfit() const { return mou_pso_rfit; }
+	void set_mou_pso_rfit(double val) { mou_pso_rfit = val; }
+	vector<double> get_mou_pso_inertia() const { return mou_pso_inertia; }
+	void set_mou_pso_inertia(vector<double> _vals) { mou_pso_inertia = _vals; }
+	double get_mou_pso_vmax_factor() const { return mou_pso_vmax_factor; }
+	void set_mou_pso_vmax_factor(double _val) { mou_pso_vmax_factor = _val; }
+	string get_mou_pso_dv_bound_handling() const { return mou_pso_dv_bound_handling; }
+	void set_mou_pso_dv_bound_handling(string name) { mou_pso_dv_bound_handling = name; }
+	int get_mou_max_nn_search() const { return mou_max_nn_search;}
+	void set_mou_max_nn_search(int val) { mou_max_nn_search = val; }
+	string get_mou_outer_repo_obs_file() const { return mou_outer_repo_obs_file; }
+	void set_mou_outer_repo_obs_file(string name) { mou_outer_repo_obs_file = name; }
+	double get_mou_hypervolume_extreme() const { return mou_hypervolume_extreme; }
+	void set_mou_hypervolume_extreme(double val) { mou_hypervolume_extreme = val; }
+	int get_mou_infill_size() const { return mou_infill_size; }
+	void set_mou_infill_size(int size) { mou_infill_size = size; }
+	double get_mou_ppd_beta() const { return mou_ppd_beta; }
+	void set_mou_ppd_beta(double val) { mou_ppd_beta = val; }
+	double get_mou_fit_epsilon() const { return mou_fit_epsilon; }
+	void set_mou_fit_epsilon(double val) { mou_fit_epsilon = val; }
+	double get_mou_fit_gamma() const { return mou_fit_gamma; }
+	void set_mou_fit_gamma(double val) { mou_fit_gamma = val; }
+	int get_mou_resample_every()const { return mou_resample_every; }
+	void set_mou_resample_every(int _every) { mou_resample_every = _every; }
+	string get_mou_resample_command()const { return mou_resample_command; }
+	void set_mou_resample_command(string _rescmd) { mou_resample_command = _rescmd; }
 	string get_mou_population_schedule() const {return mou_population_schedule;}
     void set_mou_population_schedule(string fname) {mou_population_schedule = fname;}
 	int get_mou_simplex_reflections() const { return mou_simplex_reflections; }
@@ -429,6 +508,8 @@ public:
     void set_mou_use_multigen(bool _flag) {mou_use_multigen = _flag;}
     bool get_mou_shuffle_fixed_pars() const {return mou_shuffle_fixed_pars;}
     void set_mou_shuffle_fixed_pars(bool _flag) {mou_shuffle_fixed_pars = _flag;}
+	bool get_mou_debug_dv_handling() const { return mou_debug_dv_handling; }
+	void set_mou_debug_dv_handling(bool _flag) { mou_debug_dv_handling = _flag; }
 
 	string get_ies_par_csv()const { return ies_par_csv; }
 	void set_ies_par_csv(string _ies_par_csv) { ies_par_csv = _ies_par_csv; }
@@ -556,8 +637,10 @@ public:
     vector<string> get_ies_aal_indicator_pars() const {return ies_aal_indicator_pars;}
     void set_ies_run_realname(string name) {ies_run_realname = name;}
     string get_ies_run_realname() const {return ies_run_realname;}
+	void set_ies_reinflate_num_reals(vector<int> _vec)  { ies_reinflate_num_reals = _vec;}
+	vector<int> get_ies_reinflate_num_reals() const {return ies_reinflate_num_reals;}
 
-    // --- DSI lambda surrogate accessors (plan §9) ---
+    // --- DSI lambda surrogate accessors ---
     bool get_ies_lambda_surrogate() const { return ies_lambda_surrogate; }
     void set_ies_lambda_surrogate(bool b) { ies_lambda_surrogate = b; }
     string get_ies_lambda_surrogate_train_mode() const { return ies_lambda_surrogate_train_mode; }
@@ -670,6 +753,11 @@ public:
     void set_panther_echo_interval_milliseconds(int _value) {panther_echo_interval_milliseconds = _value;}
     const int get_panther_echo_interval_milliseconds() const { return panther_echo_interval_milliseconds;}
     const int get_panther_timeout_milliseconds() const { return panther_timeout_milliseconds;}
+    void set_panther_persistent_workers(bool _flag) {panther_persistent_workers = _flag;}
+    const bool get_panther_persistent_workers() const {return panther_persistent_workers;}
+	const int get_panther_ping_interval_secs() const { return panther_ping_interval_secs;}
+	void set_panther_ping_interval_secs(int _secs) { panther_ping_interval_secs = _secs;}
+
 
 
 
@@ -775,9 +863,36 @@ private:
 
 	string sqp_dv_en;
 	string sqp_obs_restart_en;
+	string sqp_search_method;
 	int sqp_num_reals;
+	int sqp_subset_size;
 	bool sqp_update_hessian;
-	vector<double> sqp_scale_facs;
+	string sqp_hessian_update_method;
+	bool sqp_solve_partial_step;
+	vector<double> sqp_alpha_mults;
+	double sqp_filter_tol;
+	double sqp_working_set_tol;
+	double sqp_max_reinflation_cond_num;
+	int sqp_max_consec_infeas;
+	int sqp_max_consec_infeas_ies;
+	int max_consec_phiinc;
+	double sqp_scale_up_factor;
+	double sqp_scale_down_factor;
+	double sqp_cma_c1;
+	double sqp_cma_cmu;
+	double sqp_cma_cc;
+	int sqp_cma_parent_num;
+	bool sqp_cma_stepsize_control;
+	double sqp_cma_reinflation_factor;
+	double sqp_hess_max_cond_num;
+	int sqp_save_cov_every;
+	bool sqp_enforce_bounds;
+	double sqp_viol_pad;
+	int sqp_reset_hessian_every;
+	int sqp_wset_level;
+	bool sqp_rescale_search_dir;
+	int sqp_seek_feas_max_iter;
+	double sqp_risk;
 
 	int mou_population_size;
 	string mou_generator; 
@@ -794,14 +909,30 @@ private:
 	double mou_de_f;
 	int mou_save_population_every;
 	double mou_pso_omega;
-	double mou_pso_social_const;
-	double mou_pso_cognitive_const;
+	vector<double> mou_pso_social_const;
+	vector<double> mou_pso_cognitive_const;
+	double mou_pso_alpha;
+	double mou_pso_rramp;
+	double mou_pso_rfit;
+	string mou_pso_dv_bound_handling;
+	vector<double> mou_pso_inertia;
+	double mou_pso_vmax_factor;
+	double mou_ppd_beta;
+	double mou_fit_gamma;
+	double mou_fit_epsilon;
+	string mou_outer_repo_obs_file;
+	int mou_max_nn_search;
+	int mou_infill_size;
+	double mou_hypervolume_extreme;
+	int mou_resample_every;
+	string mou_resample_command;
 	string mou_population_schedule;
 	int mou_simplex_reflections;
 	vector<double> mou_simplex_factors;
 	bool mou_simplex_mutation;
 	bool mou_use_multigen;
 	bool mou_shuffle_fixed_pars;
+	bool mou_debug_dv_handling;
 
 	int ies_subset_size;
 	string ies_par_csv;
@@ -867,14 +998,15 @@ private:
     bool ies_updatebyreals;
     vector<string> ies_aal_indicator_pars;
     string ies_run_realname;
+	vector<int> ies_reinflate_num_reals;
 
-    // --- DSI lambda surrogate (Phase 3 of plan_pestpp_dsi_integration.md) ---
+    // --- DSI lambda surrogate ---
     bool ies_lambda_surrogate;
     string ies_lambda_surrogate_train_mode;     // accumulate | prior_only | from_file
     string ies_lambda_surrogate_method;         // dsi | linear | both
     string ies_lambda_surrogate_load;
     double ies_lambda_surrogate_energy_threshold;
-    string ies_lambda_surrogate_transforms;     // CSV: none | log10 | normal_score | normal_score_quad
+    string ies_lambda_surrogate_transforms;     // CSV: none | log10 | normal_score | normal_score_linear | normal_score_quad
     string ies_lambda_surrogate_rowwise_groups_file;
     bool ies_lambda_surrogate_recheck_with_fom;
     bool ies_lambda_surrogate_save_train;
@@ -919,6 +1051,8 @@ private:
 	vector<string> panther_transfer_on_finish, panther_transfer_on_fail;
     int panther_timeout_milliseconds;
     int panther_echo_interval_milliseconds;
+    bool panther_persistent_workers;
+	int panther_ping_interval_secs;
 
 };
 //ostream& operator<< (ostream &os, const PestppOptions& val);
@@ -967,7 +1101,7 @@ ostream& operator<< (ostream& os, const SVDInfo& val);
 
 double draw_standard_normal(std::mt19937& rand_gen);
 vector<double> uniform_draws(int num_reals, double lower_bound, double upper_bound, std::mt19937& rand_gen);
-
+vector<int> uniform_int_draws(int num_reals, int lower_bound, int upper_bound, std::mt19937& rand_gen);
 
 
 
