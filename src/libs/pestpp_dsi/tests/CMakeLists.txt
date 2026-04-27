@@ -13,6 +13,7 @@ set(_dsi_tests
   test_dsi_energy_truncation
   test_dsi_with_log10
   test_normal_score
+  test_normal_score_clustered_boundary
   test_rowwise_scaler
 )
 

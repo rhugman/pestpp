@@ -320,6 +320,94 @@ void NormalScoreTransform::fit(const Eigen::MatrixXd& X) {
     fitted_ = true;
 }
 
+// Tied-rank-protected boundary slope: walk inward when the immediate
+// pair clusters at the smoothing floor (1e-16) per
+// moving_average_with_endpoints. Returns the extrapolated z for the
+// requested side; on success writes `z_out` and returns true. Returns
+// false if no interior baseline has a meaningful gap (whole column
+// flat) — caller should then fall through to Clip semantics. See
+// phase5_diagnostic/B13_ns_extrap_plan.md §3 Option 1.
+bool NormalScoreTransform::safe_boundary_slope_apply(
+    const Eigen::VectorXd& zs,
+    const Eigen::VectorXd& orig,
+    int side,
+    double v,
+    double& z_out) const {
+    const Eigen::Index n = orig.size();
+    if (n < 2) return false;
+    // Per-column eps in native obs scale. Floor of 1e-12 absolute
+    // covers the case where (max_orig - min_orig) itself underflows.
+    const double span = orig(n - 1) - orig(0);
+    const double eps_orig = std::max(1e-12, 1e-9 * std::abs(span));
+
+    if (side == 0) {
+        // Lower tail: anchor at index 0; walk forward to find first k > 0
+        // where |orig(k) - orig(0)| > eps_orig.
+        for (Eigen::Index k = 1; k < n; ++k) {
+            const double d = orig(k) - orig(0);
+            if (std::abs(d) > eps_orig) {
+                const double slope = (zs(k) - zs(0)) / d;
+                z_out = zs(0) + slope * (v - orig(0));
+                return true;
+            }
+        }
+        return false;
+    } else {
+        // Upper tail: anchor at index n-1; walk backward to find first k < n-1
+        // where |orig(n-1) - orig(k)| > eps_orig.
+        for (Eigen::Index k = n - 2; k >= 0; --k) {
+            const double d = orig(n - 1) - orig(k);
+            if (std::abs(d) > eps_orig) {
+                const double slope = (zs(n - 1) - zs(k)) / d;
+                z_out = zs(n - 1) + slope * (v - orig(n - 1));
+                return true;
+            }
+        }
+        return false;
+    }
+}
+
+// Inverse counterpart: when the boundary z-gap collapses (which is far
+// less likely than the forward case but symmetric in principle on
+// tiny-N ensembles where sample_z_scores produces near-tied tails),
+// walk inward in z-space and use the wider z-baseline. Falls back to
+// Clip semantics (writing min_orig/max_orig) on full degeneracy.
+bool NormalScoreTransform::safe_boundary_slope_inverse(
+    const Eigen::VectorXd& zs,
+    const Eigen::VectorXd& orig,
+    int side,
+    double v,
+    double& orig_out) const {
+    const Eigen::Index n = zs.size();
+    if (n < 2) return false;
+    const double z_span = zs(n - 1) - zs(0);
+    const double eps_z = std::max(1e-12, 1e-9 * std::abs(z_span));
+
+    if (side == 0) {
+        for (Eigen::Index k = 1; k < n; ++k) {
+            const double d = zs(k) - zs(0);
+            if (std::abs(d) > eps_z) {
+                const double slope = (orig(k) - orig(0)) / d;
+                const double intercept = orig(0) - slope * zs(0);
+                orig_out = slope * v + intercept;
+                return true;
+            }
+        }
+        return false;
+    } else {
+        for (Eigen::Index k = n - 2; k >= 0; --k) {
+            const double d = zs(n - 1) - zs(k);
+            if (std::abs(d) > eps_z) {
+                const double slope = (orig(n - 1) - orig(k)) / d;
+                const double intercept = orig(n - 1) - slope * zs(n - 1);
+                orig_out = slope * v + intercept;
+                return true;
+            }
+        }
+        return false;
+    }
+}
+
 void NormalScoreTransform::apply_one(
     Eigen::MatrixXd& X, int j, const ColState& st) const {
     const Eigen::VectorXd& orig = st.originals;
@@ -333,6 +421,12 @@ void NormalScoreTransform::apply_one(
     const NSTailMode mode = (tail_mode_ == NSTailMode::Quad && n < 3)
                                 ? NSTailMode::Linear
                                 : tail_mode_;
+    // Option 2 — z-output cap. After Linear/Quad extrap, clamp |z| to
+    // (|min_z| + |max_z| + 5.0). For a 100-real ensemble that's roughly
+    // 2*2.5 + 5 = 10 standard normal units — far enough out that
+    // information loss is negligible while still bounding the worst
+    // case. See B13_ns_extrap_plan.md §3 Option 2.
+    const double z_cap = std::abs(min_z) + std::abs(max_z) + 5.0;
     for (Eigen::Index r = 0; r < X.rows(); ++r) {
         const double v = X(r, j);
         if (v >= min_orig && v <= max_orig) {
@@ -343,8 +437,16 @@ void NormalScoreTransform::apply_one(
                     X(r, j) = min_z;
                     break;
                 case NSTailMode::Linear: {
-                    const double slope = (zs(1) - zs(0)) / (orig(1) - orig(0));
-                    X(r, j) = min_z + slope * (v - min_orig);
+                    // Tied-rank-protected boundary slope: walk inward
+                    // when the immediate pair clusters at the smoothing
+                    // floor (1e-16) per moving_average_with_endpoints.
+                    double z_extrap;
+                    if (safe_boundary_slope_apply(zs, orig, /*side=*/0,
+                                                  v, z_extrap)) {
+                        X(r, j) = z_extrap;
+                    } else {
+                        X(r, j) = min_z;  // fall through to Clip
+                    }
                     break;
                 }
                 case NSTailMode::Quad:
@@ -355,15 +457,26 @@ void NormalScoreTransform::apply_one(
                         orig(2), zs(2));
                     break;
             }
+            // Output z-cap (Option 2 backstop).
+            if (mode != NSTailMode::Clip) {
+                X(r, j) = std::min(std::max(X(r, j), -z_cap), z_cap);
+            }
         } else { // v > max_orig
             switch (mode) {
                 case NSTailMode::Clip:
                     X(r, j) = max_z;
                     break;
                 case NSTailMode::Linear: {
-                    const double slope = (zs(n - 1) - zs(n - 2))
-                                         / (orig(n - 1) - orig(n - 2));
-                    X(r, j) = max_z + slope * (v - max_orig);
+                    // Tied-rank-protected boundary slope: walk inward
+                    // when the immediate pair clusters at the smoothing
+                    // floor (1e-16) per moving_average_with_endpoints.
+                    double z_extrap;
+                    if (safe_boundary_slope_apply(zs, orig, /*side=*/1,
+                                                  v, z_extrap)) {
+                        X(r, j) = z_extrap;
+                    } else {
+                        X(r, j) = max_z;  // fall through to Clip
+                    }
                     break;
                 }
                 case NSTailMode::Quad:
@@ -373,6 +486,10 @@ void NormalScoreTransform::apply_one(
                         orig(n - 2), zs(n - 2),
                         orig(n - 1), zs(n - 1));
                     break;
+            }
+            // Output z-cap (Option 2 backstop).
+            if (mode != NSTailMode::Clip) {
+                X(r, j) = std::min(std::max(X(r, j), -z_cap), z_cap);
             }
         }
     }
@@ -400,9 +517,17 @@ void NormalScoreTransform::inverse_one(
                     X(r, j) = min_orig;
                     break;
                 case NSTailMode::Linear: {
-                    const double slope = (orig(1) - orig(0)) / (zs(1) - zs(0));
-                    const double intercept = orig(0) - slope * zs(0);
-                    X(r, j) = slope * v + intercept;
+                    // Tied-rank-protected boundary slope: walk inward
+                    // when |zs(1)-zs(0)| collapses (symmetric to the
+                    // forward case; mostly a guard against tiny-N
+                    // degenerate z-tail spacing).
+                    double orig_extrap;
+                    if (safe_boundary_slope_inverse(zs, orig, /*side=*/0,
+                                                    v, orig_extrap)) {
+                        X(r, j) = orig_extrap;
+                    } else {
+                        X(r, j) = min_orig;  // fall through to Clip
+                    }
                     break;
                 }
                 case NSTailMode::Quad:
@@ -419,10 +544,16 @@ void NormalScoreTransform::inverse_one(
                     X(r, j) = max_orig;
                     break;
                 case NSTailMode::Linear: {
-                    const double slope = (orig(n - 1) - orig(n - 2))
-                                         / (zs(n - 1) - zs(n - 2));
-                    const double intercept = orig(n - 1) - slope * zs(n - 1);
-                    X(r, j) = slope * v + intercept;
+                    // Tied-rank-protected boundary slope: walk inward
+                    // when |zs(n-1)-zs(n-2)| collapses (symmetric to
+                    // the forward case).
+                    double orig_extrap;
+                    if (safe_boundary_slope_inverse(zs, orig, /*side=*/1,
+                                                    v, orig_extrap)) {
+                        X(r, j) = orig_extrap;
+                    } else {
+                        X(r, j) = max_orig;  // fall through to Clip
+                    }
                     break;
                 }
                 case NSTailMode::Quad:

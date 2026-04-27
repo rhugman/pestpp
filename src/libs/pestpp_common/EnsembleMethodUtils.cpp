@@ -4759,6 +4759,17 @@ vector<ObservationEnsemble> EnsembleMethod::predict_lambda_ensembles_surrogate(
     last_surrogate_full_phi_.assign(pe_lams.size(),
         std::numeric_limits<double>::infinity());
 
+    // Cache training_max once for the predict-overflow guard
+    // (B13_ns_extrap_plan.md §3 Option 3). If a candidate's predicted
+    // obs blows up to >100x the training-data scale, treat the
+    // candidate as unrankable rather than letting an ill-conditioned
+    // NS extrapolation dominate the argmin.
+    double train_max = 0.0;
+    if (need_dsi && dsi_training_store_) {
+        train_max = dsi_training_store_->matrix_for(act_obs)
+                        .cwiseAbs().maxCoeff();
+    }
+
     for (size_t i = 0; i < pe_lams.size(); ++i) {
         const double cur_lam = lam_vals[i];
         const double sf = scale_vals[i];
@@ -4811,7 +4822,29 @@ vector<ObservationEnsemble> EnsembleMethod::predict_lambda_ensembles_surrogate(
             Eigen::MatrixXd latent_full = dsi_emulator_->project_oe(oe_linear_full);
             oe_chosen_full = dsi_emulator_->predict(latent_full);
         }
-        last_surrogate_full_phi_[i] = mean_phi_eq(oe_chosen_full);
+        // Predict-overflow guard (B13_ns_extrap_plan.md §3 Option 3).
+        // If an ill-conditioned NS extrapolation has propagated through
+        // pinv + predict to produce obs values >100x the training scale,
+        // mark this candidate as +inf phi (already initialized) and
+        // skip the mean_phi computation. argmin then naturally avoids
+        // this candidate.
+        bool overflow = false;
+        if (need_dsi && train_max > 0.0) {
+            const double pred_max = oe_chosen_full.cwiseAbs().maxCoeff();
+            if (pred_max > 100.0 * train_max) {
+                stringstream ss;
+                ss << "[DSI-SURROGATE] candidate i=" << i
+                   << " (lam=" << cur_lam << " sf=" << sf
+                   << ") predict overflow: pred_max=" << pred_max
+                   << " > 100*train_max=" << (100.0 * train_max)
+                   << "; rejecting via inf phi";
+                message(1, ss.str());
+                overflow = true;
+            }
+        }
+        if (!overflow) {
+            last_surrogate_full_phi_[i] = mean_phi_eq(oe_chosen_full);
+        }
 
         // Wrap into ObservationEnsemble (same template as FOM path).
         ObservationEnsemble _oe = oe;

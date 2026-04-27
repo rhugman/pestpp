@@ -133,6 +133,33 @@ private:
     void apply_one(Eigen::MatrixXd& X, int j, const ColState& st) const;
     void inverse_one(Eigen::MatrixXd& X, int j, const ColState& st) const;
 
+    // Tied-rank-protected boundary-slope helpers. The forward NS
+    // boundary slope at line 346/364 uses (zs(1)-zs(0))/(orig(1)-orig(0))
+    // (and the symmetric upper version), but `moving_average_with_endpoints`
+    // enforces strict monotonicity of `originals` with a literal +1e-16
+    // floor — meaning a clustered-boundary column produces a slope of
+    // order 1e+16 in native units, blowing up out-of-range z. These
+    // helpers walk inward to the first index where the boundary gap is
+    // larger than `eps_orig` (forward) or `eps_z` (inverse), and fall
+    // back to Clip behavior if the entire column is degenerate. See
+    // phase5_diagnostic/B13_ns_extrap_plan.md §3 Option 1.
+    //
+    // `side` = 0 -> lower tail (use indices near 0)
+    //        = 1 -> upper tail (use indices near n-1)
+    // Returns true on success and writes the resulting z into `z_out`;
+    // returns false if no meaningful interior baseline exists, in which
+    // case the caller should fall through to Clip semantics.
+    bool safe_boundary_slope_apply(const Eigen::VectorXd& zs,
+                                   const Eigen::VectorXd& orig,
+                                   int side,
+                                   double v,
+                                   double& z_out) const;
+    bool safe_boundary_slope_inverse(const Eigen::VectorXd& zs,
+                                     const Eigen::VectorXd& orig,
+                                     int side,
+                                     double v,
+                                     double& orig_out) const;
+
     NSTailMode tail_mode_;
     double tol_;
     int max_samples_;
