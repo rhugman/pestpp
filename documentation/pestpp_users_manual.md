@@ -3742,38 +3742,115 @@ Alternatively, if the mean objective function attained through the lambda and li
 
 ### <a id='s13-2-5b' />9.2.5.1 DSI Surrogate-Assisted Lambda Testing
 
-The default lambda testing procedure described above tests every (lambda, scale) candidate by running the forward model on the *ies_subset_size()* realizations of the parameter subset. For expensive forward models this is the dominant per-iteration cost. PESTPP-IES can optionally replace those subset model runs with a Data Space Inversion (DSI) surrogate fit on FOM-evaluated training data accumulated from previous iterations. The winning (lambda, scale) candidate still triggers a full FOM remainder sweep — only the *selection* of the winning candidate moves to the surrogate. The surrogate is enabled by setting *ies_lambda_surrogate()* to *true*; with the default *false*, PESTPP-IES is bit-for-bit identical to its previous behaviour.
+#### Overview
 
-The surrogate fit happens once per outer iteration, on the running training store (which seeds from the prior observation ensemble at iteration 1 and grows by appending the FOM-evaluated remainder rows after each iteration's winning lambda is applied). Per-(lambda, scale) prediction reuses the SVD pieces already computed by the canonical IES upgrade — specifically the observation-side linearised delta U·diag(s²)·X2 = D_anom·X3 — to construct an initial linearised observation ensemble, which is then refined by a forward-then-inverse pass through the DSI emulator's projection matrix. Predictions are returned in the original observation space and saved as `*.iter.lambda.scale.obs_dsi.jcb` (note the `_dsi` filename tag) so they are forensically distinguishable from FOM-evaluated artefacts. Parameter ensemble files (`*.iter.lambda.scale.par.jcb`) are *not* tagged because the parameter upgrade math is identical in both modes.
+The default lambda testing procedure described above tests every (lambda, scale) candidate by running the forward model on the *ies_subset_size()* realizations of the parameter subset. For expensive forward models this is the dominant per-iteration cost. PESTPP-IES can optionally replace those subset model runs with a Data Space Inversion (DSI) surrogate fit on FOM-evaluated training data accumulated from previous iterations. The winning (lambda, scale) candidate still triggers a full FOM remainder sweep — only the *selection* of the winning candidate moves to the surrogate. The surrogate is enabled by setting *ies_lambda_surrogate()* to *true*; with the default *false*, PESTPP-IES is bit-for-bit identical to its non-surrogate behaviour.
 
-The surrogate path is only wired for the canonical nonlocalized + non-multimodal upgrade (the typical *ies_use_approx*=true configuration). When `localizer` or `ies_multimodal_alpha != 1.0` is in play, PESTPP-IES emits a `[DSI-SURROGATE]` warning and falls back to FOM lambda testing for that iteration. The training store still accumulates so subsequent iterations may pick the surrogate path back up if the configuration changes.
+The surrogate path is wired for the canonical nonlocalized, non-multimodal upgrade (the typical *ies_use_approx*=true configuration). When *localizer* or *ies_multimodal_alpha* != 1.0 is in play, PESTPP-IES emits a `[DSI-SURROGATE]` warning and falls back to FOM lambda testing for that iteration. The training store still accumulates so subsequent iterations may pick the surrogate path back up.
 
-The surrogate-mode rec file emits structured `[DSI-SURROGATE]` log lines on every iteration: the running training-set size, the number of components retained after energy-threshold truncation, the sum of squared retained singular values, and per-iter fit and predict timings.
+#### Algorithm
+
+DSI is a low-rank linear surrogate that maps a learned latent space onto observation space. The surrogate is fitted on a training matrix of FOM-evaluated observation ensembles and used to predict the observation ensemble that each (lambda, scale) candidate would produce, without invoking the forward model.
+
+**Per-iteration DSI fit.** Let `T` be the running training matrix, shape (n_train_real × n_obs), where rows are realizations of the active observations (those with non-zero weight). PESTPP-IES then:
+
+1. Applies the per-column transform pipeline forward: `T_t = transform(T)`. The default pipeline applies a Normal Score (NS) transform, described below; alternative transforms are *log10* and *none* (identity).
+2. Centres on the column means: `D = T_t - ovals`, where `ovals = mean(T_t, axis=0)`.
+3. Scales by `1/sqrt(n_train_real - 1)` and runs a thin SVD: `D / sqrt(N-1) = U · diag(s) · V^T`.
+4. Truncates to the first `k` components such that `sum(s[0:k]^2) / sum(s^2) >= ies_lambda_surrogate_energy_threshold`. The default threshold 0.99 retains 99% of the singular-value energy.
+5. Stores the projection matrix `pmat = V_k · diag(s_k)`, shape (n_obs × k), and the column-mean vector `ovals`.
+
+**Predict from latent.** Given a latent ensemble `L` of shape (n_real × k):
+
+`oe_t = ovals + pmat · L^T`     (transformed obs space, n_obs × n_real)
+`oe   = inverse_transform(oe_t.T)`     (original obs space)
+
+**Project an observation ensemble to latent.** Given `oe` of shape (n_real × n_obs):
+
+`oe_t = transform(oe)`      (forward through the pipeline)
+`L    = (oe_t - ovals) · pinv(pmat)^T`     (least-squares projection)
+
+The combination `predict(project(oe))` is a truncation-projected reconstruction of `oe`: components in the kept latent directions are preserved, components outside the kept subspace are discarded.
+
+**Per-(lambda, scale) phi prediction.** The canonical IES upgrade computes an SVD-based update to the parameter ensemble. PESTPP-IES captures the *linearised observation delta* that the same upgrade would produce in observation space:
+
+`dD = -(1/sqrt(N-1)) · D_anom · X3`
+
+where `D_anom = oe - mean(oe)` is the obs anomaly matrix in the original (un-weighted) obs space, and `X3 = V · diag(s) · diag(1/(s^2 + lam + 1)) · U^T · (weights · residual)` is the same matrix-product the parameter upgrade uses. The negation matches PESTPP-IES's residual convention `sim - target` (the parameter upgrade is `pe_new = pe - scale · par_diff · X3` in the same convention). For each backtrack factor `sf`, the candidate's predicted obs ensemble is
+
+`oe_predicted = inverse_transform( ovals + pmat · pinv(pmat) · ( transform(oe + sf · dD) - ovals )^T ).T`
+
+i.e. apply the linearised delta in physical obs space, project through the trained DSI, and predict back. The `mean phi` of `oe_predicted` against the target observations is the candidate's score.
+
+A **predict-overflow guard** rejects any candidate whose maximum absolute predicted obs value exceeds 100× the training-data scale. Such candidates have `phi = +inf` and are skipped by the argmin selection. This prevents an ill-conditioned NS extrapolation (see below) from poisoning the lambda choice in pathological corners of the candidate grid.
+
+**Training-store growth.** The training store seeds from the prior observation ensemble at iteration 1. After each iteration's winning lambda runs the FOM remainder sweep, the FOM-evaluated rows append to the store. Surrogate-predicted rows are never appended — they would create a self-referential loop. With *ies_lambda_surrogate_recheck_with_fom*=true, the recheck candidate's FOM rows are also appended.
+
+#### Normal Score (NS) transform
+
+The Normal Score transform standardises each observation column to standard-normal marginals before the SVD, so that obs distributions with heavy tails or strong skew do not dominate the principal components. NS is applied per-column independently:
+
+1. Sort the column's training values ascending, then smooth with `moving_average_with_endpoints` (a windowed mean that preserves the first and last values and enforces strict monotonicity by adding 1e-16 to any tied adjacent pair).
+2. Generate a Monte-Carlo sample of standard-normal z-scores of the same length, sort ascending, and pair the i-th sorted training value with the i-th sorted z-score.
+3. **Forward** transform of a value `v` is a linear interpolation through the (originals → z-scores) lookup table.
+4. **Inverse** transform of a value `z` is the symmetric interpolation through (z-scores → originals).
+
+For values `v` outside `[min_originals, max_originals]` (or `z` outside `[min_z, max_z]` on the inverse side), the transform extrapolates. The extrapolation policy is selected by *ies_lambda_surrogate_transforms()*:
+
+- **`normal_score`** — Clip. Out-of-range values are clamped to the boundary z-score (or the boundary original on the inverse side). No extrapolation; safest but loses tail information.
+- **`normal_score_linear`** (default) — Linear extrapolation using the boundary slope. Robustness guards are applied: when the immediate boundary pair `(orig[0], orig[1])` (or symmetrically `(orig[n-2], orig[n-1])`) is close enough that the smoothing's 1e-16 monotonicity floor dominates, the slope estimator walks inward to the first index whose gap to the boundary exceeds an epsilon, avoiding a slope blow-up that would otherwise produce z-scores of order 1e+15 for slightly out-of-range inputs. The forward extrapolation output is also clamped to `|min_z| + |max_z| + 5` standard normal units to bound the worst case.
+- **`normal_score_quad`** — Lagrange-quadratic extrapolation through the last three boundary points. Mathematically smooth, but boundary curvature noise can amplify on small ensembles; recommended only for cases where the linear mode is known to under-represent the tail.
+
+#### When the surrogate is preferred over FOM
+
+The surrogate trades surrogate-prediction accuracy for compute. Useful when:
+
+- The forward model run time dominates the iteration cost.
+- The (lambda, scale) candidate grid is wider than 6–9 candidates — the surrogate's per-candidate cost is negligible.
+- The prior ensemble is wide enough that meaningful obs-space directions are well-covered.
+
+Less useful when:
+
+- The forward model is fast (subset FOM runs are not a bottleneck).
+- Observations are heavy-tailed or strongly non-monotone in the parameters (NS may not capture the structure with the available training reals).
+- The training store has fewer reals than `npar_adj`.
+
+#### Output artefacts
+
+The surrogate emits structured `[DSI-SURROGATE]` log lines in the rec on every iteration: training-set size, retained component count, sum of squared kept singular values, and per-iter fit and predict timings.
+
+Per-(lambda, scale) predicted obs ensembles are saved as `*.<iter>.<lam>.lambda.<scale>.scale.obs_dsi.jcb` (note the `_dsi` filename tag) so they are distinguishable from FOM-evaluated artefacts. Parameter ensemble files (`*.<iter>.<lam>.lambda.<scale>.scale.par.jcb`) are not tagged because the parameter upgrade math is identical in surrogate and FOM modes.
+
+When *ies_lambda_surrogate_save_train*=true, the cumulative training matrix is dumped as `*.<iter>.dsi.training.csv`. When *ies_lambda_surrogate_save_pmat*=true, the projection matrix and singular values are dumped as `*.<iter>.dsi.pmat.csv` and `*.<iter>.dsi.s_kept.csv`.
+
+#### Options
 
 | Option | Default | Effect |
 |---|---|---|
 | *ies_lambda_surrogate()* | false | Master switch. |
-| *ies_lambda_surrogate_train_mode()* | accumulate | Training-set source. `accumulate` (the default) re-fits each iteration on the full running store; `prior_only` fits once on iteration 1 and never re-fits; `from_file` loads a precomputed pyemu DSI artefact (not yet wired). |
-| *ies_lambda_surrogate_method()* | dsi | Selects the per-(λ, scale) prediction path. `dsi` runs the linear tangent then refines through DSI. `linear` returns the bare linear tangent — exact for linear forward models, no DSI fit needed, and cheaper. `both` runs both paths and logs the per-(λ, scale) phi disagreement before returning the DSI prediction as canonical; the disagreement is a free uncertainty signal used by the disagreement-driven `recheck_with_fom` path. |
-| *ies_lambda_surrogate_load()* | "" | Path to a precomputed DSI artefact (used when `train_mode=from_file`). |
-| *ies_lambda_surrogate_energy_threshold()* | 0.99 | SVD energy retention. Values strictly less than 1.0 truncate to the smallest k such that the first k components retain that fraction of the total signal energy. 1.0 keeps every component the SVD returns. |
-| *ies_lambda_surrogate_transforms()* | normal_score_linear | Per-column data-space transform applied before the SVD. Recognised values: `none`, `log10`, `normal_score` (clip out-of-range inputs to the training boundary; no extrapolation), `normal_score_linear` (default; linear extrapolation using the boundary slope — empirically the most stable choice on realistic ensemble sizes), `normal_score_quad` (Lagrange-quadratic extrapolation through the last 3 training points; mathematically smooth but operationally fragile — boundary curvature noise can amplify and destabilise the surrogate, so use with caution). The transform is reproduced from `pyemu.emulators.transformers.NormalScoreTransformer`; pyemu's `quadratic_extrapolation` flag is a misnomer (its True branch does linear extrapolation), so this option exposes the three policies explicitly. |
+| *ies_lambda_surrogate_train_mode()* | accumulate | Training-set source. `accumulate` (default) re-fits each iteration on the running store; `prior_only` fits once on iteration 1 and never re-fits. |
+| *ies_lambda_surrogate_method()* | dsi | Per-(lambda, scale) prediction path. `dsi` runs the linear tangent then refines through DSI. `linear` returns the bare linear tangent — exact for linear forward models, no DSI fit needed, cheaper. `both` runs both paths and logs per-(lambda, scale) phi disagreement; the DSI prediction is canonical, and the disagreement is used by the disagreement-driven *recheck_with_fom* path to choose which candidate to FOM-validate. |
+| *ies_lambda_surrogate_energy_threshold()* | 0.99 | SVD energy retention. Values < 1.0 truncate to the smallest k such that the first k components retain that fraction of the total singular-value energy; 1.0 keeps every component. |
+| *ies_lambda_surrogate_transforms()* | normal_score_linear | Per-column data-space transform applied before the SVD. Recognised values: `none`, `log10`, `normal_score` (NS with clip out-of-range), `normal_score_linear` (NS with linear-slope extrapolation; recommended), `normal_score_quad` (NS with Lagrange-quadratic extrapolation). See "Normal Score (NS) transform" above. |
 | *ies_lambda_surrogate_rowwise_groups_file()* | "" | Path to a CSV mapping group name → comma-separated obs name list, enabling pattern-DSI per-group min-max scaling. Empty disables rowwise scaling. |
-| *ies_lambda_surrogate_recheck_with_fom()* | false | After picking the surrogate-best (or, in `method=both`, the highest-disagreement) candidate, re-run the *subset* under FOM and replace the surrogate prediction at that one candidate with the FOM result. The downstream `best_mean > acc_phi` check then uses FOM-truth phi at the validated candidate, breaking the surrogate-induced abandon deadlock described below. Cheapest possible safety net: one extra FOM batch (subset reals × one candidate) per iter. |
-| *ies_lambda_surrogate_save_train()* | false | When true, dump the cumulative training matrix as `*.iter.dsi.training.csv` for offline diff against pyemu. |
-| *ies_lambda_surrogate_save_pmat()* | false | When true, dump the projection matrix and singular values as `*.iter.dsi.pmat.csv` and `*.iter.dsi.s_kept.csv`. |
+| *ies_lambda_surrogate_recheck_with_fom()* | false | After picking the surrogate-best (or, in `method=both`, the highest-disagreement) candidate, re-run the *subset* under FOM and replace the surrogate prediction at that one candidate with the FOM result. The downstream `best_mean > acc_phi` check then uses FOM-truth phi at the validated candidate. One extra subset-sized FOM batch per iter — see "Interaction with *ies_accept_phi_fac*" below. |
 | *ies_lambda_surrogate_min_train_reals()* | 30 | Minimum training-store size required before the surrogate is fit. Below this threshold PESTPP-IES emits a `[DSI-SURROGATE]` warning and falls back to FOM for that iteration. |
+| *ies_lambda_surrogate_save_train()* | false | When true, dump the cumulative training matrix as `*.<iter>.dsi.training.csv`. |
+| *ies_lambda_surrogate_save_pmat()* | false | When true, dump the projection matrix and singular values as `*.<iter>.dsi.pmat.csv` and `*.<iter>.dsi.s_kept.csv`. |
+| *ies_lambda_surrogate_load()* | "" | Path to a precomputed DSI artefact, used when *ies_lambda_surrogate_train_mode*=`from_file`. |
 
-**Interaction with *ies_accept_phi_fac*.** PESTPP-IES abandons an iteration's parameter upgrade when the best subset mean phi exceeds *last_best_mean × ies_accept_phi_fac* (default 1.05). When the lambda surrogate is enabled, that "best subset mean phi" is computed from *surrogate-predicted* observations rather than from FOM model runs. If the surrogate's predictions are systematically over-pessimistic — which happens when the linear-tangent step is a poor approximation far from the prior, or when the training store is small relative to the parameter dimension — the abandon branch can fire even though the FOM-evaluated phi at the same lambda candidate would have been acceptable. Because the abandon branch fires *before* the FOM remainder run, no FOM data is generated that iteration and the training store does not grow. The surrogate is then bootstrap-stuck on its current data, the next iteration produces the same poor predictions, and the run can stall in a deadlock that pestpp-ies surfaces as repeated `best subset mean phi (X) greater than acceptable phi : Y` lines in the rec.
+#### Interaction with *ies_accept_phi_fac*
 
-PESTPP-IES does NOT auto-relax *ies_accept_phi_fac* in this scenario — silently disabling a safety check would be worse than the deadlock itself. Instead, on every surrogate-induced abandon the rec emits an explicit `[DSI-SURROGATE] surrogate-induced abandon` line that names the cause, and after two or more consecutive surrogate-induced abandons it emits a `[DSI-SURROGATE] WARNING:` line listing actionable remediations. If you observe this pattern, options are:
+PESTPP-IES abandons an iteration's parameter upgrade when the best subset mean phi exceeds *last_best_mean × ies_accept_phi_fac* (default 1.05). When the lambda surrogate is enabled, that "best subset mean phi" is computed from *surrogate-predicted* observations rather than from FOM model runs. If the surrogate's predictions are systematically over-pessimistic — which happens when the linear-tangent step is a poor approximation far from the prior, or when the training store is small relative to the parameter dimension — the abandon branch can fire even though the FOM-evaluated phi at the same lambda candidate would have been acceptable. Because the abandon branch fires *before* the FOM remainder run, no FOM data is generated that iteration and the training store does not grow. The surrogate is then bootstrap-stuck on its current data, the next iteration produces the same poor predictions, and the run can stall in a deadlock that PESTPP-IES surfaces as repeated `best subset mean phi (X) greater than acceptable phi : Y` lines in the rec.
 
-1. **Loosen *ies_accept_phi_fac*** — set it to e.g. 1.5 or 10.0 so the surrogate's predicted phi is not gated quite so tightly. **Note that this option alone is not sufficient to obtain good calibration outcomes.** Setting it to a deliberately-large value (e.g. 1000.0) disables the abandon gate entirely, and is the closest single-flag analog to the configuration used by the original Python `dsilam` prototype — but in benchmarks the C++ in-process surrogate with `ies_accept_phi_fac=1000.0` produced *worse* posterior forecast skill than the FOM control, because trusting an over-pessimistic surrogate's "best" candidate moves parameters in the wrong direction at every iteration. The Python prototype escapes this trap because its outer-loop architecture re-validates the winning candidate against FOM at each iteration boundary, which the C++ in-process integration cannot do without `ies_lambda_surrogate_recheck_with_fom` (option 3 below).
-2. **Raise *ies_lambda_surrogate_min_train_reals*** — keep the surrogate skipped on early iterations until a larger training store has accumulated from FOM remainder sweeps. Useful when the prior ensemble is small relative to *npar_adj*.
-3. **Enable *ies_lambda_surrogate_recheck_with_fom*** — run FOM on the subset for one chosen candidate per iter and replace its surrogate prediction with FOM truth before the abandon check. Cheapest *principled* fix (one extra FOM batch per iter); preserves the abandon gate's safety value when the surrogate happens to predict accurately.
-4. **Disable the surrogate entirely** — set *ies_lambda_surrogate=false* for runs where the linear-tangent approximation is consistently inaccurate (e.g. heavy-tail observation distributions, strongly nonlinear forward models).
+PESTPP-IES does not auto-relax *ies_accept_phi_fac* in this scenario — silently disabling a safety check would be worse than the deadlock itself. Instead, on every surrogate-induced abandon the rec emits a `[DSI-SURROGATE] surrogate-induced abandon` line, and after two or more consecutive surrogate-induced abandons a `[DSI-SURROGATE] WARNING:` line listing remediations. Options are:
 
-The surrogate is research-grade software at the time of writing: consider running a control (FOM-only) mode in parallel for any production work to confirm that the surrogate-selected lambda trajectory does not diverge from the FOM-selected one.
+1. **Loosen *ies_accept_phi_fac*.** Set it to e.g. 1.5 or 10.0 so the surrogate's predicted phi is not gated quite so tightly. Setting it to a large value (e.g. 1000.0) disables the abandon gate entirely, but trusting an over-pessimistic surrogate's "best" candidate then moves parameters in the wrong direction at every iteration; combine with option 3 below.
+2. **Raise *ies_lambda_surrogate_min_train_reals*.** Keep the surrogate skipped on early iterations until a larger training store has accumulated from FOM remainder sweeps. Useful when the prior ensemble is small relative to *npar_adj*.
+3. **Enable *ies_lambda_surrogate_recheck_with_fom*.** Run FOM on the subset for one chosen candidate per iter and replace its surrogate prediction with FOM truth before the abandon check. Cheapest principled fix (one extra subset-sized FOM batch per iter); preserves the abandon gate's safety value when the surrogate happens to predict accurately.
+4. **Disable the surrogate.** Set *ies_lambda_surrogate*=false for runs where the linear-tangent approximation is consistently inaccurate (e.g. heavy-tail observation distributions, strongly nonlinear forward models).
+
+When using the surrogate for production work, consider a parallel FOM-only run as a control to confirm that the surrogate-selected lambda trajectory does not diverge from the FOM-selected one.
 
 ### <a id='s13-2-6' />9.2.6 Restarting
 
