@@ -1360,6 +1360,18 @@ void UpgradeThread::ensemble_solution(const int iter, const int verbose_level,co
         int num_reals = par_resid.cols();
         double scale = (1.0 / (sqrt(double(num_reals - 1))));
         local_utils::save_mat(verbose_level, thread_id, iter, t_count, "obs_diff", obs_diff);
+        // DSI lambda surrogate: stash the unscaled, unweighted obs_diff
+        // (the physical D_anom) BEFORE it gets clobbered by the in-place
+        // weighted-and-scaled overwrite + SVD. The downstream consumer
+        // adds the captured delta to physical-space oe rows, so the
+        // delta itself must be in physical (unweighted) obs space. With
+        // non-uniform weights, the previous "U·s²·X2 = scaled_obs_diff
+        // · X3" form gave a per-row weight-biased result that blew up
+        // by ~1e34 on realistically-weighted fixtures.
+        Eigen::MatrixXd obs_diff_phys;
+        if (obs_delta_linearised_out != nullptr) {
+            obs_diff_phys = obs_diff;
+        }
         obs_diff = scale * (weights * obs_diff);
         local_utils::save_mat(verbose_level, thread_id, iter, t_count, "scaled_obs_diff", obs_diff);
         local_utils::save_mat(verbose_level, thread_id, iter, t_count, "par_diff", par_diff);
@@ -1409,16 +1421,16 @@ void UpgradeThread::ensemble_solution(const int iter, const int verbose_level,co
         local_utils::save_mat(verbose_level, thread_id, iter, t_count, "X3", X3);
         upgrade_1 = -1.0 * par_diff * X3;
 
-        // DSI lambda surrogate (plan §7.4): capture the observation-side
-        // linearised delta so the lambda-loop can predict per-(λ, scale)
-        // obs ensembles cheaply. obs_diff has been overwritten by the
-        // in-place SVD (rsvd.solve_ip), so we reconstruct
-        //     D_anom * X3 = U * diag(s) * V^T * V * diag(s) * X2
-        //                 = U * diag(s²) * X2
-        // using the still-live SVD pieces. Ut.transpose() is U.
+        // DSI lambda surrogate (plan §7.4): capture the linearised
+        // obs delta in physical (unweighted) obs space. The correct
+        // form (mirroring the Python `dsilam` reference at
+        // ies_math_pp.py:301-302) is:
+        //     dD = (1/sqrt(N-1)) * D_anom_phys * X3
+        // Adding this delta to physical-space oe rows gives a
+        // correctly-scaled prediction regardless of the obs weight
+        // distribution.
         if (obs_delta_linearised_out != nullptr) {
-            *obs_delta_linearised_out =
-                Ut.transpose() * s2.asDiagonal() * X2;
+            *obs_delta_linearised_out = scale * (obs_diff_phys * X3);
         }
 
         if (use_prior_scaling) {
