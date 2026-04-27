@@ -1426,11 +1426,13 @@ void UpgradeThread::ensemble_solution(const int iter, const int verbose_level,co
         // form (mirroring the Python `dsilam` reference at
         // ies_math_pp.py:301-302) is:
         //     dD = (1/sqrt(N-1)) * D_anom_phys * X3
-        // Adding this delta to physical-space oe rows gives a
-        // correctly-scaled prediction regardless of the obs weight
-        // distribution.
+        // The negative sign mirrors the par-upgrade form
+        // `upgrade_1 = -1.0 * par_diff * X3` at line 1410: pestpp-ies's
+        // residual convention is `sim - obs_target` (opposite of pyemu's
+        // `obs - sim`), so X3 here carries the sim-minus-obs sign and
+        // both upgrades need a negation to point toward the target.
         if (obs_delta_linearised_out != nullptr) {
-            *obs_delta_linearised_out = scale * (obs_diff_phys * X3);
+            *obs_delta_linearised_out = -scale * (obs_diff_phys * X3);
         }
 
         if (use_prior_scaling) {
