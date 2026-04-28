@@ -7524,7 +7524,11 @@ bool EnsembleMethod::solve(bool use_mda, vector<double> inflation_factors, vecto
         use_surrogate = false;
     }
     const bool method_linear = (surrogate_method == "linear");
-    const bool surrogate_path_supported = !use_localizer && (mm_alpha == 1.0);
+    // Multimodal IES is active only when 0 < mm_alpha < 1.0; the
+    // default (0.0) and the explicit "use-all-reals" value (>= 1.0)
+    // both mean no multimodal slicing, so the surrogate is fine.
+    const bool mm_active = (mm_alpha > 0.0) && (mm_alpha < 1.0);
+    const bool surrogate_path_supported = !use_localizer && !mm_active;
     if (use_surrogate && !surrogate_path_supported)
     {
         message(1, "[DSI-SURROGATE] localizer or mm_alpha != 1.0 — falling back to FOM lambda testing this iter");
@@ -8255,21 +8259,36 @@ bool EnsembleMethod::solve(bool use_mda, vector<double> inflation_factors, vecto
         vector<string> pe_names = pe.get_real_names(), oe_names = oe.get_real_names();
 
         vector<string> org_pe_idxs, org_oe_idxs;
-        set<string> ssub;
-        for (auto &i: subset_idxs)
-            ssub.emplace(pe_names[i]);
-        for (int i = 0; i < pe_names.size(); i++)
-            if (ssub.find(pe_names[i]) == ssub.end()) {
-                pe_keep_names.push_back(pe_names[i]);
-                //oe_keep_names.push_back(oe_names[i]);
-            }
-        ssub.clear();
-        for (auto &i: subset_idxs)
-            ssub.emplace(oe_names[i]);
-        for (int i = 0; i < oe_names.size(); i++)
-            if (ssub.find(oe_names[i]) == ssub.end()) {
-                oe_keep_names.push_back(oe_names[i]);
-            }
+        // In standard FOM lambda testing, the subset reals were already
+        // FOM-evaluated for every candidate, so the "remainder" FOM run
+        // covers only the non-subset reals. In DSI surrogate mode the
+        // subset reals were never FOM-evaluated — they only have DSI
+        // predictions in oe_lams[best_idx]. Including them in the
+        // remainder run gives the final OE a uniform FOM provenance
+        // (no DSI-predicted rows leaking into the posterior).
+        if (surrogate_active_this_iter_)
+        {
+            pe_keep_names = pe_names;
+            oe_keep_names = oe_names;
+        }
+        else
+        {
+            set<string> ssub;
+            for (auto &i: subset_idxs)
+                ssub.emplace(pe_names[i]);
+            for (int i = 0; i < pe_names.size(); i++)
+                if (ssub.find(pe_names[i]) == ssub.end()) {
+                    pe_keep_names.push_back(pe_names[i]);
+                    //oe_keep_names.push_back(oe_names[i]);
+                }
+            ssub.clear();
+            for (auto &i: subset_idxs)
+                ssub.emplace(oe_names[i]);
+            for (int i = 0; i < oe_names.size(); i++)
+                if (ssub.find(oe_names[i]) == ssub.end()) {
+                    oe_keep_names.push_back(oe_names[i]);
+                }
+        }
         message(0, "phi summary for best lambda, scale fac: ",
                 vector<double>({lam_vals[best_idx], scale_vals[best_idx]}));
         ph.update(oe_lams[best_idx], pe_lams[best_idx], weights);
@@ -8344,11 +8363,25 @@ bool EnsembleMethod::solve(bool use_mda, vector<double> inflation_factors, vecto
 		}
 		//drop the remaining runs from the par en then append the remaining par runs (in case some failed)
 		performance_log->log_event("assembling ensembles");
-		pe_lams[best_idx].drop_rows(pe_keep_names);
-		pe_lams[best_idx].append_other_rows(remaining_pe_lam);
-		pe_lams[best_idx].set_fixed_info(pe.get_fixed_info());
-		//append the remaining obs en
-		oe_lam_best.append_other_rows(remaining_oe_lam);
+		if (surrogate_active_this_iter_)
+		{
+			// In surrogate mode the subset reals were never FOM-evaluated;
+			// remaining_pe_lam / remaining_oe_lam now contain the full
+			// ensemble re-run under the winning upgrade. Replace pe_lams
+			// and oe_lam_best wholesale to drop the surrogate-predicted
+			// subset rows and avoid mixed FOM/DSI provenance.
+			pe_lams[best_idx] = remaining_pe_lam;
+			pe_lams[best_idx].set_fixed_info(pe.get_fixed_info());
+			oe_lam_best = remaining_oe_lam;
+		}
+		else
+		{
+			pe_lams[best_idx].drop_rows(pe_keep_names);
+			pe_lams[best_idx].append_other_rows(remaining_pe_lam);
+			pe_lams[best_idx].set_fixed_info(pe.get_fixed_info());
+			//append the remaining obs en
+			oe_lam_best.append_other_rows(remaining_oe_lam);
+		}
 		assert(pe_lams[best_idx].shape().first == oe_lam_best.shape().first);
         drop_bad_reals(pe_lams[best_idx], oe_lam_best);
 
