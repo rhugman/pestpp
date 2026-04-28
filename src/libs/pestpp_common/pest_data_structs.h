@@ -665,6 +665,10 @@ public:
     void set_ies_lambda_surrogate_min_train_reals(int v) { ies_lambda_surrogate_min_train_reals = v; }
     double get_ies_lambda_surrogate_max_phi_drop_factor() const { return ies_lambda_surrogate_max_phi_drop_factor; }
     void set_ies_lambda_surrogate_max_phi_drop_factor(double d) { ies_lambda_surrogate_max_phi_drop_factor = d; }
+    bool get_ies_lambda_surrogate_active_refine() const { return ies_lambda_surrogate_active_refine; }
+    void set_ies_lambda_surrogate_active_refine(bool b) { ies_lambda_surrogate_active_refine = b; }
+    int get_ies_lambda_surrogate_active_refine_max_probes() const { return ies_lambda_surrogate_active_refine_max_probes; }
+    void set_ies_lambda_surrogate_active_refine_max_probes(int v) { ies_lambda_surrogate_active_refine_max_probes = v; }
 
     string get_gsa_method() const { return gsa_method; }
 	void set_gsa_method(string _m) { gsa_method = _m; }
@@ -1025,6 +1029,20 @@ private:
     // training cloud and the surrogate predicted a spurious 20× phi
     // drop).
     double ies_lambda_surrogate_max_phi_drop_factor;
+    // Active-learning lambda search. When true, after the DSI surrogate
+    // ranks the lambda × scale candidates pestpp-ies probes them
+    // sequentially (FOM-evaluating the best-DSI-predicted unprobed
+    // candidate on the subset, appending the FOM rows to the training
+    // store, refitting DSI, re-predicting the remaining candidates) up
+    // to ies_lambda_surrogate_active_refine_max_probes times. The
+    // probe loop stops early when DSI predicts no remaining candidate
+    // beats the best already-probed FOM phi. The winner is chosen
+    // from the probed candidates by FOM-actual subset phi. Default
+    // false. When enabled, the static phi-drop gate is bypassed —
+    // active refinement is self-correcting in the same failure mode
+    // (DSI extrapolating outside the training cloud).
+    bool ies_lambda_surrogate_active_refine;
+    int ies_lambda_surrogate_active_refine_max_probes;
 
 
 

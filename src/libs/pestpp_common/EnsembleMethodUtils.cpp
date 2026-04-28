@@ -4945,6 +4945,272 @@ vector<ObservationEnsemble> EnsembleMethod::predict_lambda_ensembles_surrogate(
     return obs_lams;
 }
 
+int EnsembleMethod::active_refine_lambda_candidates(
+    std::vector<ParameterEnsemble>& pe_lams,
+    std::vector<ObservationEnsemble>& oe_lams,
+    std::vector<double>& lam_vals,
+    std::vector<double>& scale_vals,
+    const std::vector<int>& subset_idxs,
+    const std::vector<std::string>& act_obs_names,
+    const std::map<double, Eigen::MatrixXd>& obs_delta_by_cur_lam,
+    const std::string& surrogate_method,
+    int cycle,
+    int max_probes)
+{
+    // Active-learning lambda search.
+    //
+    // Per probe (up to max_probes):
+    //   1. Pick the unprobed candidate with the smallest current
+    //      DSI-predicted full-ensemble phi (read from
+    //      last_surrogate_full_phi_).
+    //   2. Stop if the best remaining DSI prediction is no better
+    //      than the best already-probed FOM phi.
+    //   3. FOM-evaluate that candidate on the subset (one
+    //      run_lambda_ensembles batch of subset_size runs).
+    //   4. Replace oe_lams[idx] with the FOM result and update
+    //      last_surrogate_full_phi_[idx] to the FOM-actual phi so
+    //      the downstream ranking loop selects the winner correctly.
+    //   5. Append the FOM rows to dsi_training_store_, refit
+    //      dsi_emulator_, and re-call predict_lambda_ensembles_surrogate
+    //      to update predictions for the unprobed candidates. Probed
+    //      candidates' oe_lams stay as FOM truth.
+    //
+    // Rationale: the static phi-drop gate (factor 10×) catches
+    // surrogate over-prediction by re-running the entire 24-candidate
+    // grid via FOM — wasteful when only a few candidates needed
+    // FOM-confirmation. Active refinement spends FOM compute only on
+    // the candidates the surrogate currently rates competitive, and
+    // each probe sharpens the surrogate for the next decision. On
+    // well-behaved truths it converges in 1 probe; on the truth_07-
+    // style outlier it converges in 3-5 probes (rather than 24).
+
+    stringstream ss;
+    const int n_cands = static_cast<int>(pe_lams.size());
+    if (n_cands == 0 || max_probes <= 0) return 0;
+    if (last_surrogate_full_phi_.size() != static_cast<size_t>(n_cands))
+    {
+        ss.str("");
+        ss << "[DSI-SURROGATE] active_refine: last_surrogate_full_phi_ "
+           << "size " << last_surrogate_full_phi_.size()
+           << " != n_cands " << n_cands
+           << "; aborting refinement (surrogate prediction missing)";
+        message(0, ss.str());
+        return 0;
+    }
+
+    std::vector<bool> probed(n_cands, false);
+    std::vector<double> actual_phi(n_cands,
+        std::numeric_limits<double>::infinity());
+    int n_probed = 0;
+    int best_actual_idx = -1;
+    double best_actual_phi = std::numeric_limits<double>::infinity();
+
+    ss.str("");
+    ss << "[DSI-SURROGATE] active_refine starting: n_candidates="
+       << n_cands << " max_probes=" << max_probes;
+    message(1, ss.str());
+
+    for (int probe = 0; probe < max_probes; ++probe)
+    {
+        // Step 1+2: pick best-DSI-predicted unprobed candidate.
+        int next_idx = -1;
+        double next_pred = std::numeric_limits<double>::infinity();
+        for (int i = 0; i < n_cands; ++i)
+        {
+            if (probed[i]) continue;
+            const double v = last_surrogate_full_phi_[i];
+            if (std::isfinite(v) && v < next_pred)
+            {
+                next_pred = v;
+                next_idx = i;
+            }
+        }
+        if (next_idx < 0)
+        {
+            ss.str("");
+            ss << "[DSI-SURROGATE] active_refine stop: no remaining "
+               << "candidate with finite predicted phi at probe="
+               << (probe + 1);
+            message(1, ss.str());
+            break;
+        }
+
+        // Stopping rule: DSI says no remaining beats best probed.
+        if (best_actual_idx >= 0 && next_pred >= best_actual_phi)
+        {
+            ss.str("");
+            ss << "[DSI-SURROGATE] active_refine stop: predicted phi "
+               << "for best remaining candidate (" << next_pred
+               << ") >= best probed FOM phi (" << best_actual_phi
+               << ") at probe=" << (probe + 1);
+            message(1, ss.str());
+            break;
+        }
+
+        // Step 3: FOM-evaluate the chosen candidate on the subset.
+        ss.str("");
+        ss << "[DSI-SURROGATE] active_refine probe " << (probe + 1)
+           << "/" << max_probes << ": candidate idx=" << next_idx
+           << " lam=" << lam_vals[next_idx]
+           << " scale=" << scale_vals[next_idx]
+           << " predicted_phi=" << next_pred;
+        message(1, ss.str());
+
+        std::vector<ParameterEnsemble> pe_one = { pe_lams[next_idx] };
+        std::vector<double> lam_one = { lam_vals[next_idx] };
+        std::vector<double> scale_one = { scale_vals[next_idx] };
+        const auto t0 = std::chrono::steady_clock::now();
+        std::vector<ObservationEnsemble> oe_one;
+        try
+        {
+            oe_one = run_lambda_ensembles(pe_one, lam_one, scale_one,
+                cycle,
+                const_cast<std::vector<int>&>(subset_idxs),
+                const_cast<std::vector<int>&>(subset_idxs));
+        }
+        catch (const std::exception& e)
+        {
+            ss.str("");
+            ss << "[DSI-SURROGATE] active_refine probe " << (probe + 1)
+               << ": run_lambda_ensembles failed: " << e.what()
+               << " — stopping refinement";
+            message(0, ss.str());
+            break;
+        }
+        const auto t1 = std::chrono::steady_clock::now();
+        const double probe_seconds =
+            std::chrono::duration<double>(t1 - t0).count();
+
+        if (oe_one[0].shape().first == 0)
+        {
+            ss.str("");
+            ss << "[DSI-SURROGATE] active_refine probe " << (probe + 1)
+               << ": all reals failed for candidate " << next_idx
+               << "; stopping refinement";
+            message(0, ss.str());
+            break;
+        }
+
+        // Step 4: compute FOM phi, update tracking, replace oe_lams.
+        ph.update(oe_one[0], pe_lams[next_idx], weights);
+        const double fom_phi =
+            ph.get_representative_phi(L2PhiHandler::phiType::COMPOSITE);
+        actual_phi[next_idx] = fom_phi;
+        probed[next_idx] = true;
+        ++n_probed;
+        if (fom_phi < best_actual_phi)
+        {
+            best_actual_phi = fom_phi;
+            best_actual_idx = next_idx;
+        }
+        oe_lams[next_idx] = oe_one[0];
+        // Mirror FOM-actual phi into last_surrogate_full_phi_[next_idx]
+        // so the downstream ranking loop (which reads
+        // last_surrogate_full_phi_ when surrogate_active_this_iter_)
+        // picks the candidate by FOM truth, not stale prediction.
+        last_surrogate_full_phi_[next_idx] = fom_phi;
+
+        ss.str("");
+        ss << "[DSI-SURROGATE] active_refine probe " << (probe + 1)
+           << " result: candidate " << next_idx
+           << " predicted=" << next_pred
+           << " fom_actual=" << fom_phi
+           << " best_actual_so_far=" << best_actual_phi
+           << " (idx=" << best_actual_idx
+           << ") probe_seconds=" << probe_seconds;
+        message(1, ss.str());
+
+        // Step 5: append rows to training store + refit + re-predict.
+        // Only worth doing if there are still unprobed candidates AND
+        // we have probes left.
+        if (dsi_training_store_)
+        {
+            try
+            {
+                Eigen::MatrixXd new_rows = oe_one[0].get_eigen(
+                    std::vector<std::string>(), act_obs_names);
+                dsi_training_store_->append(new_rows, act_obs_names);
+                ss.str("");
+                ss << "[DSI-SURROGATE] active_refine appended "
+                   << new_rows.rows() << " rows; training store now "
+                   << dsi_training_store_->n_realisations()
+                   << " realizations";
+                message(2, ss.str());
+            }
+            catch (const std::exception& e)
+            {
+                ss.str("");
+                ss << "[DSI-SURROGATE] active_refine append failed: "
+                   << e.what() << " — keeping training store unchanged";
+                message(0, ss.str());
+            }
+        }
+
+        const int unprobed_remaining = n_cands - n_probed;
+        if (unprobed_remaining > 0
+            && (probe + 1) < max_probes
+            && dsi_emulator_
+            && dsi_training_store_)
+        {
+            try
+            {
+                const auto fit_t0 = std::chrono::steady_clock::now();
+                dsi_emulator_->fit(
+                    dsi_training_store_->matrix_for(act_obs_names));
+                const auto fit_t1 = std::chrono::steady_clock::now();
+                const double fit_seconds =
+                    std::chrono::duration<double>(fit_t1 - fit_t0).count();
+
+                std::vector<ObservationEnsemble> oe_pred =
+                    predict_lambda_ensembles_surrogate(
+                        pe_lams, lam_vals, scale_vals, subset_idxs,
+                        obs_delta_by_cur_lam, surrogate_method);
+                // Replace only unprobed oe_lams. Probed keep FOM truth.
+                // last_surrogate_full_phi_ for unprobed gets updated as
+                // a side effect of predict_lambda_ensembles_surrogate;
+                // restore probed entries from actual_phi afterwards.
+                for (int i = 0; i < n_cands; ++i)
+                {
+                    if (!probed[i]) oe_lams[i] = oe_pred[i];
+                }
+                for (int i = 0; i < n_cands; ++i)
+                {
+                    if (probed[i]) last_surrogate_full_phi_[i] = actual_phi[i];
+                }
+                ss.str("");
+                ss << "[DSI-SURROGATE] active_refine refit + re-predict: "
+                   << "fit_seconds=" << fit_seconds
+                   << " n_unprobed=" << unprobed_remaining;
+                message(2, ss.str());
+            }
+            catch (const std::exception& e)
+            {
+                ss.str("");
+                ss << "[DSI-SURROGATE] active_refine refit/re-predict "
+                   << "failed: " << e.what()
+                   << " — stopping refinement";
+                message(0, ss.str());
+                break;
+            }
+        }
+    }
+
+    ss.str("");
+    ss << "[DSI-SURROGATE] active_refine summary: probes=" << n_probed
+       << "/" << max_probes
+       << " best_idx=" << best_actual_idx;
+    if (best_actual_idx >= 0)
+    {
+        ss << " (lam=" << lam_vals[best_actual_idx]
+           << " scale=" << scale_vals[best_actual_idx]
+           << " actual_phi=" << best_actual_phi << ")";
+    }
+    message(0, ss.str());
+
+    ++active_refine_iters_;
+    return n_probed;
+}
+
 pair<string,string> EnsembleMethod::save_ensembles(string tag, int cycle, ParameterEnsemble& _pe, ObservationEnsemble& _oe)
 {
 	stringstream ss;
@@ -7872,6 +8138,28 @@ bool EnsembleMethod::solve(bool use_mda, vector<double> inflation_factors, vecto
 	    message(1, ss.str());
 	    surrogate_active_this_iter_ = true;
 
+	    // Active-learning lambda search (preferred when enabled). Probes
+	    // candidates one-at-a-time via FOM subset eval, appending FOM
+	    // rows to the training store and refitting DSI between probes.
+	    // Stops early once DSI predicts no remaining candidate beats
+	    // the best already-probed FOM phi. Bypasses the static
+	    // phi-drop gate below — they target the same failure mode
+	    // (DSI extrapolating outside the training cloud) but the
+	    // probe loop is self-correcting and substantially cheaper on
+	    // well-behaved truths.
+	    const bool active_refine_on = pest_scenario
+	        .get_pestpp_options()
+	        .get_ies_lambda_surrogate_active_refine();
+	    if (active_refine_on)
+	    {
+	        const int max_probes = pest_scenario.get_pestpp_options()
+	            .get_ies_lambda_surrogate_active_refine_max_probes();
+	        active_refine_lambda_candidates(pe_lams, oe_lams, lam_vals,
+	            scale_vals, subset_idxs, act_obs_names,
+	            obs_delta_by_cur_lam, surrogate_method, cycle,
+	            max_probes);
+	    }
+
 	    // Prior-phi sanity gate: if the surrogate predicts an
 	    // unreasonably large per-iter phi drop, its candidates lie
 	    // outside the convex hull of training rows and the linear
@@ -7882,7 +8170,9 @@ bool EnsembleMethod::solve(bool use_mda, vector<double> inflation_factors, vecto
 	    // led DSI to predict a 20× phi drop that FOM showed to be 0×
 	    // (Kendall τ between DSI and FOM rankings = −0.55 vs +0.504
 	    // median across the other 29 pairs).
-	    const double max_phi_drop_factor = pest_scenario
+	    // Skipped when active_refine_on — that path subsumes the gate.
+	    const double max_phi_drop_factor = active_refine_on ? 0.0 :
+	        pest_scenario
 	        .get_pestpp_options()
 	        .get_ies_lambda_surrogate_max_phi_drop_factor();
 	    if (max_phi_drop_factor > 0.0

@@ -496,6 +496,10 @@ protected:
     // surrogate ranking was discarded in favour of FOM lambda
     // testing. Reported in the run summary; never reset.
     int gate_triggered_iters_ = 0;
+    // Counts iters where the active-learning lambda search
+    // (ies_lambda_surrogate_active_refine) ran. Reported in the run
+    // summary; never reset.
+    int active_refine_iters_ = 0;
     // Set to true at the start of each lambda-loop iteration when the
     // surrogate path actually predicted obs ensembles for the subset.
     // Read by the abandon-branch warning so we don't blame the
@@ -545,6 +549,21 @@ protected:
 	    const std::vector<int>& subset_idxs,
 	    const std::map<double, Eigen::MatrixXd>& obs_delta_by_cur_lam,
 	    const std::string& method = "dsi");
+
+	// Active-learning lambda search. Mutates oe_lams +
+	// last_surrogate_full_phi_ + dsi_training_store_ + dsi_emulator_
+	// in place. Returns the number of probes performed.
+	int active_refine_lambda_candidates(
+	    std::vector<ParameterEnsemble>& pe_lams,
+	    std::vector<ObservationEnsemble>& oe_lams,
+	    std::vector<double>& lam_vals,
+	    std::vector<double>& scale_vals,
+	    const std::vector<int>& subset_idxs,
+	    const std::vector<std::string>& act_obs_names,
+	    const std::map<double, Eigen::MatrixXd>& obs_delta_by_cur_lam,
+	    const std::string& surrogate_method,
+	    int cycle,
+	    int max_probes);
 
 	void report_and_save(int cycle);
 
