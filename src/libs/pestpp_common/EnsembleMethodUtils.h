@@ -491,6 +491,11 @@ protected:
     // runs. Used only for rec-file warnings; we do NOT auto-disable
     // the surrogate or auto-bump ies_accept_phi_fac.
     int consecutive_surrogate_abandons_ = 0;
+    // Counts iters where the prior-phi sanity gate
+    // (ies_lambda_surrogate_max_phi_drop_factor) tripped and the
+    // surrogate ranking was discarded in favour of FOM lambda
+    // testing. Reported in the run summary; never reset.
+    int gate_triggered_iters_ = 0;
     // Set to true at the start of each lambda-loop iteration when the
     // surrogate path actually predicted obs ensembles for the subset.
     // Read by the abandon-branch warning so we don't blame the

@@ -15,6 +15,7 @@ set(_dsi_tests
   test_normal_score
   test_normal_score_clustered_boundary
   test_rowwise_scaler
+  test_phi_drop_gate
 )
 
 foreach(_t IN LISTS _dsi_tests)

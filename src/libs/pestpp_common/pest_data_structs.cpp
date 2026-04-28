@@ -1425,6 +1425,11 @@ bool PestppOptions::assign_ies_value_by_key(const string& key, const string& val
         convert_ip(value, ies_lambda_surrogate_min_train_reals);
         return true;
     }
+    else if (key == "IES_LAMBDA_SURROGATE_MAX_PHI_DROP_FACTOR")
+    {
+        convert_ip(value, ies_lambda_surrogate_max_phi_drop_factor);
+        return true;
+    }
 
     return false;
 }
@@ -2670,6 +2675,7 @@ void PestppOptions::set_defaults()
     set_ies_lambda_surrogate_save_train(false);
     set_ies_lambda_surrogate_save_pmat(false);
     set_ies_lambda_surrogate_min_train_reals(30);
+    set_ies_lambda_surrogate_max_phi_drop_factor(0.0);
 
 	// DA parameters
 	//set_da_use_ies(false);

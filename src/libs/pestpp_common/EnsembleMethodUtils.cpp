@@ -7871,6 +7871,59 @@ bool EnsembleMethod::solve(bool use_mda, vector<double> inflation_factors, vecto
 	    // message() already mirrors to the rec file.
 	    message(1, ss.str());
 	    surrogate_active_this_iter_ = true;
+
+	    // Prior-phi sanity gate: if the surrogate predicts an
+	    // unreasonably large per-iter phi drop, its candidates lie
+	    // outside the convex hull of training rows and the linear
+	    // PC-basis reconstruction is extrapolating. Discard the
+	    // surrogate ranking for this iter and fall back to FOM
+	    // lambda testing. Motivated by truth_07 in the
+	    // phase5_multi_truth benchmark where a 5.5σ prior_phi outlier
+	    // led DSI to predict a 20× phi drop that FOM showed to be 0×
+	    // (Kendall τ between DSI and FOM rankings = −0.55 vs +0.504
+	    // median across the other 29 pairs).
+	    const double max_phi_drop_factor = pest_scenario
+	        .get_pestpp_options()
+	        .get_ies_lambda_surrogate_max_phi_drop_factor();
+	    if (max_phi_drop_factor > 0.0
+	        && last_best_mean > 0.0
+	        && last_surrogate_full_phi_.size() == pe_lams.size())
+	    {
+	        double min_pred_phi = std::numeric_limits<double>::infinity();
+	        for (size_t i = 0; i < last_surrogate_full_phi_.size(); ++i)
+	        {
+	            const double v = last_surrogate_full_phi_[i];
+	            if (std::isfinite(v) && v < min_pred_phi) min_pred_phi = v;
+	        }
+	        const double threshold = last_best_mean / max_phi_drop_factor;
+	        if (std::isfinite(min_pred_phi) && min_pred_phi < threshold)
+	        {
+	            ss.str("");
+	            ss << "[DSI-SURROGATE] gate triggered: predicted phi "
+	               << min_pred_phi << " below current/" << max_phi_drop_factor
+	               << "=" << threshold
+	               << "; falling back to FOM lambda testing this iter";
+	            message(0, ss.str());
+	            ++gate_triggered_iters_;
+	            surrogate_active_this_iter_ = false;
+	            last_surrogate_full_phi_.clear();
+	            // Re-run all candidates through FOM on the subset
+	            // (mirrors the FOM-control branch below).
+	            if (pe_filenames.size() > 0)
+	            {
+	                vector<int> temp;
+	                for (int i = 0; i < (int)subset_idxs.size(); ++i)
+	                    temp.push_back(i);
+	                oe_lams = run_lambda_ensembles(pe_lams, lam_vals,
+	                    scale_vals, cycle, temp, subset_idxs);
+	            }
+	            else
+	            {
+	                oe_lams = run_lambda_ensembles(pe_lams, lam_vals,
+	                    scale_vals, cycle, subset_idxs, subset_idxs);
+	            }
+	        }
+	    }
 	}
 	else if (pe_filenames.size() > 0)
 	{

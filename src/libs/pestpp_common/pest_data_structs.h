@@ -663,6 +663,8 @@ public:
     void set_ies_lambda_surrogate_save_pmat(bool b) { ies_lambda_surrogate_save_pmat = b; }
     int get_ies_lambda_surrogate_min_train_reals() const { return ies_lambda_surrogate_min_train_reals; }
     void set_ies_lambda_surrogate_min_train_reals(int v) { ies_lambda_surrogate_min_train_reals = v; }
+    double get_ies_lambda_surrogate_max_phi_drop_factor() const { return ies_lambda_surrogate_max_phi_drop_factor; }
+    void set_ies_lambda_surrogate_max_phi_drop_factor(double d) { ies_lambda_surrogate_max_phi_drop_factor = d; }
 
     string get_gsa_method() const { return gsa_method; }
 	void set_gsa_method(string _m) { gsa_method = _m; }
@@ -1012,6 +1014,17 @@ private:
     bool ies_lambda_surrogate_save_train;
     bool ies_lambda_surrogate_save_pmat;
     int ies_lambda_surrogate_min_train_reals;
+    // Prior-phi sanity gate: if > 0 and the surrogate's predicted
+    // best-candidate phi for an iteration is below
+    // current_phi / max_phi_drop_factor (i.e., the surrogate claims an
+    // unreasonably large per-iter phi reduction), discard the
+    // surrogate ranking for that iter and fall back to FOM lambda
+    // testing. Default 0.0 = disabled. Recommended value 10.0
+    // (motivated by the truth_07 anomaly in phase5_multi_truth where
+    // a 5.5σ prior_phi outlier put every candidate outside the DSI
+    // training cloud and the surrogate predicted a spurious 20× phi
+    // drop).
+    double ies_lambda_surrogate_max_phi_drop_factor;
 
 
 
